@@ -52,11 +52,9 @@ In the terminal that is `exit` / Ctrl-D. The VS Code extension spawns one
 `claude` process per session, so closing the Claude panel normally ends it too —
 but if you are unsure, reload or quit the editor.
 
-**You do not have to guess.** After reopening, say anything to Claude Code: if
-the reply does not start with `PREFTOOL-CANARY`, the restart did not take. Try
-again before doing any real work, otherwise the session is not usable data.
-`/context` gives the same answer — `.claude/CLAUDE.md` should be listed under
-**Memory files**.
+To confirm it worked, run `/context` in Claude Code — `.claude/CLAUDE.md` should
+be listed under **Memory files**. If it is not, nothing was injected into the
+model's context and the session will not produce usable data.
 
 Nothing else is required, and no account is needed.
 
