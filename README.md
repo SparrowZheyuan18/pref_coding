@@ -1,20 +1,12 @@
 # preftool
 
-Capture, extract and inject **developer preferences** for an HCI study on agentic
+Capture, extract and inject **developer preferences** for agentic
 coding.
 
 The study loop is: participants vibe-code in their own repos with Claude Code →
 their sessions are captured → preferences are extracted from the traces → the
 preferences are injected back into the agent's context → post-intervention
 sessions are captured.
-
-The tool's first property is **reproducibility and auditability**, usability
-second. Every extraction, every injection and every model call leaves an
-archivable record on disk.
-
-preftool does not implement a collector. It reads transcripts that already
-exist — from [Entire](https://docs.entire.io) when it is installed, and
-otherwise straight from the files Claude Code writes for every session.
 
 ---
 
