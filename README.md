@@ -33,16 +33,22 @@ cd ~/your-repo
 preftool start P01                 # 1. once, at the beginning
                                    #    ... then use Claude Code normally ...
 preftool intervene                 # 2. at the intervention point
-                                   #    ***  restart Claude Code here  ***
+                                   #    *** quit Claude Code, then `claude --continue` ***
                                    #    ... keep using Claude Code normally ...
 preftool finish                    # 3. at the end
 ```
 
-**Restart Claude Code after `intervene`.** CLAUDE.md is read when a conversation
-starts and is not re-read mid-session, so a session that is already running will
-not pick up the change. Quitting and relaunching always works; `/clear` should
-too, since it begins a new conversation. Either way, confirm with `/context` —
-`.claude/CLAUDE.md` should be listed under **Memory files**.
+**Quit Claude Code and open it again after `intervene`.** CLAUDE.md is read when
+Claude Code starts, so a session that is already running will not pick up the
+change.
+
+You do not have to start a new conversation: `claude --continue` resumes the one
+you were in and still re-reads the file. Verified empirically — with a marker in
+`.claude/CLAUDE.md` changed between runs, each `claude -p --continue` reply
+carried the current marker, not the one loaded at first launch.
+
+Confirm either way with `/context` — `.claude/CLAUDE.md` should be listed under
+**Memory files**.
 
 Nothing else is required, and no account is needed.
 
