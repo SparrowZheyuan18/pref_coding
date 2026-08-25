@@ -14,10 +14,15 @@ sessions are captured.
 
 ```bash
 git clone git@github.com:SparrowZheyuan18/pref_coding.git
-cd pref_tool
-./install.sh                       # creates .venv, installs preftool
-export PATH="$PWD/.venv/bin:$PATH"
+cd pref_coding
+./install.sh
 ```
+
+The installer creates a virtualenv, installs `preftool`, and adds it to your
+`PATH` in `~/.zshrc` (or `~/.bashrc`). If Python 3.11+ is missing it offers to
+install [uv](https://docs.astral.sh/uv/) for you. Re-running it is safe.
+
+Open a new terminal afterwards — `preftool --help` should work.
 
 Then, in the repo you will actually be coding in — three commands for the whole
 study:
@@ -28,13 +33,18 @@ cd ~/your-repo
 preftool start P01                 # 1. once, at the beginning
                                    #    ... then use Claude Code normally ...
 preftool intervene                 # 2. at the intervention point
+                                   #    ***  restart Claude Code here  ***
                                    #    ... keep using Claude Code normally ...
 preftool finish                    # 3. at the end
 ```
 
-`start` sets up capture, `intervene` captures + extracts + injects, `finish`
-captures again and checks the injection landed. Nothing else is required, and no
-account is needed.
+**Restart Claude Code after `intervene`.** CLAUDE.md is read when a conversation
+starts and is not re-read mid-session, so a session that is already running will
+not pick up the change. Quitting and relaunching always works; `/clear` should
+too, since it begins a new conversation. Either way, confirm with `/context` —
+`.claude/CLAUDE.md` should be listed under **Memory files**.
+
+Nothing else is required, and no account is needed.
 
 ## For researchers
 
