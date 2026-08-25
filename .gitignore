@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+
+# 研究设计文档，不分发给被试
+preftool-spec.md

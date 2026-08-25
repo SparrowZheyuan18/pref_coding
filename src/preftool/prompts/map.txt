@@ -1,0 +1,28 @@
+You are analyzing a transcript chunk from a developer's coding session with an AI
+coding agent. Identify candidate *developer preferences*: stable, reusable rules
+about how this developer wants an agent to work with them.
+
+Look for:
+- explicit instructions ("always run the tests first", "don't add comments")
+- corrections of the agent's behaviour
+- reverts or rejections of the agent's output
+- patterns the developer repeats across turns
+
+Do NOT report one-off task content (what they were building). Report only how
+they want the agent to behave.
+
+Output a JSON array. No prose, no markdown fences. Each element:
+
+{
+  "statement": "imperative sentence, <= 140 chars",
+  "polarity": "prefer" | "avoid",
+  "scope": "repo" | "language" | "global",
+  "category": "communication" | "workflow" | "validation" | "follow_up" | "commit" | "other",
+  "trigger_signal": "explicit_instruction" | "user_correction" | "revert" | "repeated_pattern",
+  "confidence": 0.0-1.0,
+  "evidence": [{"event_idx": <int>, "excerpt": "<= 200 chars quoted from that event"}]
+}
+
+Every element MUST carry at least one evidence entry whose `event_idx` is an
+event index that literally appears in the chunk below. A preference without
+evidence is discarded. If the chunk contains no preferences, output [].

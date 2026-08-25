@@ -1,0 +1,27 @@
+You are given candidate developer preferences extracted from separate chunks of
+the same developer's coding sessions. Merge them into one deduplicated list.
+
+Rules:
+- Merge candidates that express the same underlying rule; union their evidence
+  and keep the highest confidence.
+- Drop candidates whose evidence list is empty.
+- Drop task-specific content that is not a reusable behavioural rule.
+- Prefer concrete, checkable statements over vague ones.
+- Assign `priority` (integer, lower = injected first): the best supported and
+  most broadly applicable preferences get the lowest numbers.
+
+Output a JSON array, no prose, no markdown fences. Each element:
+
+{
+  "statement": "imperative sentence, <= 140 chars",
+  "polarity": "prefer" | "avoid",
+  "scope": "repo" | "language" | "global",
+  "category": "communication" | "workflow" | "validation" | "follow_up" | "commit" | "other",
+  "trigger_signal": "explicit_instruction" | "user_correction" | "revert" | "repeated_pattern",
+  "confidence": 0.0-1.0,
+  "priority": <int>,
+  "evidence": [{"event_idx": <int>, "excerpt": "<= 200 chars"}]
+}
+
+Preserve the original `event_idx` values from the candidates. If nothing
+survives, output [].
