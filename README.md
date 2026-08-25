@@ -13,7 +13,7 @@ sessions are captured.
 ## For participants
 
 ```bash
-git clone <this repo>
+git clone git@github.com:SparrowZheyuan18/pref_coding.git
 cd pref_tool
 ./install.sh                       # creates .venv, installs preftool
 export PATH="$PWD/.venv/bin:$PATH"
