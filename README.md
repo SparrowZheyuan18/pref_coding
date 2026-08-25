@@ -47,7 +47,15 @@ you were in and still re-reads the file. Verified empirically — with a marker 
 `.claude/CLAUDE.md` changed between runs, each `claude -p --continue` reply
 carried the current marker, not the one loaded at first launch.
 
-Confirm either way with `/context` — `.claude/CLAUDE.md` should be listed under
+What counts as a restart is the `claude` process ending, not a window closing.
+In the terminal that is `exit` / Ctrl-D. The VS Code extension spawns one
+`claude` process per session, so closing the Claude panel normally ends it too —
+but if you are unsure, reload or quit the editor.
+
+**You do not have to guess.** After reopening, say anything to Claude Code: if
+the reply does not start with `PREFTOOL-CANARY`, the restart did not take. Try
+again before doing any real work, otherwise the session is not usable data.
+`/context` gives the same answer — `.claude/CLAUDE.md` should be listed under
 **Memory files**.
 
 Nothing else is required, and no account is needed.
