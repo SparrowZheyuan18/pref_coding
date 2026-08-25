@@ -311,7 +311,21 @@ def start(
     arm: Annotated[str, typer.Option("--arm")] = "treatment",
 ) -> None:
     """Step 1 of 3 — set up this repo for the study. Run once, then work normally."""
-    repo = Path(repo)
+    repo = Path(repo).resolve()
+
+    # The single most likely mistake: running this inside the preftool checkout
+    # instead of the repo the participant actually codes in.
+    if (repo / "src" / "preftool" / "cli.py").exists():
+        _echo("This looks like the preftool checkout itself, not your own project.")
+        _echo("cd into the repo you will be coding in, then run this again.")
+        raise typer.Exit(1)
+
+    _echo(f"repo             {repo}")
+    if not (repo / ".git").is_dir():
+        _echo("git              not a git repo (fine, but Entire capture needs one)")
+    found = sources.claude_transcripts(repo)
+    _echo(f"past sessions    {len(found)} transcript(s) found for this repo")
+
     _write_json(_config_path(repo), {"participant_id": participant, "arm": arm})
     inject_mod.git_exclude(repo)
 
@@ -352,8 +366,15 @@ def intervene(
         arm=config.get("arm", "treatment"),
     )
     _echo("")
-    _echo("Injected. Keep using Claude Code as usual.")
-    _echo("When you are done, run:  preftool finish")
+    _echo("=" * 62)
+    _echo("  Injected. Now START A NEW CLAUDE CODE SESSION.")
+    _echo("")
+    _echo("  CLAUDE.md is only read when a session starts, so your current")
+    _echo("  session will not pick this up. Quit Claude Code and run it again.")
+    _echo("  (Check it worked: run /context and look under 'Memory files'.)")
+    _echo("=" * 62)
+    _echo("")
+    _echo("Then keep working as usual. When you are done:  preftool finish")
 
 
 @app.command()
@@ -366,6 +387,13 @@ def finish(repo: RepoOpt = Path(".")) -> None:
     _echo("--- verify ---")
     verify(repo=repo)
     _echo("")
+    records = inject_mod.list_records(repo)
+    if records and records[-1].verified is False:
+        _echo("The marker was not found in any reply captured after the injection.")
+        _echo("Most likely cause: Claude Code was not restarted after `intervene`,")
+        _echo("so CLAUDE.md was never re-read. Restart it, work for a few turns,")
+        _echo("then run `preftool finish` again.")
+        _echo("")
     _echo(f"Done. Send us the folder:  {_data(repo)}")
 
 
