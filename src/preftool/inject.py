@@ -227,6 +227,23 @@ def git_exclude(repo: Path) -> bool:
 # --------------------------------------------------------------------------- api
 
 
+def git_unexclude(repo: Path) -> bool:
+    """Take our entries back out of `.git/info/exclude`."""
+    exclude = Path(repo) / ".git" / "info" / "exclude"
+    if not exclude.exists():
+        return False
+    lines = exclude.read_text(encoding="utf-8").splitlines()
+    kept = [
+        line for line in lines
+        if line.strip() not in _EXCLUDE_ENTRIES and line.strip() != "# preftool"
+    ]
+    if len(kept) == len(lines):
+        return False
+    text = "\n".join(kept).rstrip("\n")
+    exclude.write_text(text + "\n" if text else "", encoding="utf-8")
+    return True
+
+
 def new_canary_token() -> str:
     """The study-wide marker. Stable on purpose - see CANARY_TOKEN."""
     return CANARY_TOKEN

@@ -58,6 +58,35 @@ model's context and the session will not produce usable data.
 
 Nothing else is required, and no account is needed.
 
+## Uninstalling
+
+When a participant is done, in each repo they used:
+
+```bash
+preftool uninstall           # undo everything in this repo, keep the data
+# ... send .preftool/ to the researchers ...
+preftool uninstall --purge   # then delete the data too
+```
+
+That removes the block from `.claude/CLAUDE.md` (leaving anything the
+participant wrote around it byte for byte), takes our lines back out of
+`.git/info/exclude`, and — only if `preftool start --entire` turned it on —
+runs `entire disable --uninstall`.
+
+Then, to remove the tool from the machine:
+
+```bash
+cd /path/to/pref_coding
+./uninstall.sh               # removes the PATH line and .venv
+rm -rf /path/to/pref_coding
+```
+
+Claude Code's own transcripts under `~/.claude/` are the participant's and are
+never touched.
+
+Verified by diffing a repo's file list before setup and after
+`uninstall --purge`: identical.
+
 ## For researchers
 
 The three commands above are thin wrappers over the primitives, which stay
@@ -89,7 +118,7 @@ Entire is the intended intermediary but is **not required**:
 
 | Source | When it is used |
 |---|---|
-| `entire` | When the `entire` binary is on PATH *and* there is an active session in this worktree. `preftool start` runs `entire enable -y --agent claude-code` for you. |
+| `entire` | Only if you opted in with `preftool start --entire`, which runs `entire enable -y --agent claude-code`. Off by default: enabling it writes five git hooks and rewrites the participant's `.claude/settings.json`. |
 | `claude-code` | Otherwise. Claude Code already writes a transcript per session to `~/.claude/projects/<repo-path-slug>/*.jsonl`; the slug is the repo's absolute path with every non-alphanumeric character replaced by `-`. |
 
 `--source auto` (the default) tries Entire and falls back on its own. The common

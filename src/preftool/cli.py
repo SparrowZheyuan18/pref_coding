@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Annotated, Optional
@@ -15,6 +16,8 @@ from preftool.extract import extract_preferences, placeholder_result
 from preftool.llm import LLMClient, LocalAgentClient, MockLLMClient
 from preftool.models import Event, ExtractionResult, ExtractorConfig, Preference
 from preftool.normalize import coverage, load_transcript
+
+DATA_LABEL = ".preftool/"
 
 app = typer.Typer(
     add_completion=False,
@@ -279,10 +282,64 @@ def verify(
 
 
 @app.command()
-def uninstall(repo: RepoOpt = Path(".")) -> None:
-    """Remove the preftool block, leaving the participant's own content intact."""
-    action = inject_mod.remove_block(Path(repo))
-    _echo(f"{action}: {inject_mod.claude_md_path(Path(repo))}")
+def uninstall(
+    repo: RepoOpt = Path("."),
+    purge: Annotated[bool, typer.Option("--purge", help="Also delete .preftool/ (the collected data).")] = False,
+    keep_entire: Annotated[bool, typer.Option("--keep-entire", help="Leave Entire enabled.")] = False,
+) -> None:
+    """Undo everything preftool did to this repo."""
+    repo = Path(repo).resolve()
+    config = _read_config(repo)
+
+    action = inject_mod.remove_block(repo)
+    _echo(f"CLAUDE.md block  {action}")
+
+    _echo(f"git exclude      {'cleaned' if inject_mod.git_unexclude(repo) else 'nothing to clean'}")
+
+    if config.get("entire_enabled_by_preftool") and not keep_entire:
+        if sources.has_entire():
+            # --uninstall also removes .entire/, the git hooks, session state
+            # and the agent hooks it wrote into .claude/settings.json.
+            proc = subprocess.run(
+                ["entire", "disable", "--uninstall", "--force"],
+                capture_output=True, text=True, cwd=str(repo),
+            )
+            _echo(f"entire           {'disabled' if proc.returncode == 0 else 'could not disable: ' + (proc.stderr or proc.stdout).strip()[:80]}")
+        else:
+            _echo("entire           binary gone; run `entire disable` yourself if needed")
+    elif config.get("entire_enabled_by_preftool"):
+        _echo("entire           left enabled (--keep-entire)")
+    else:
+        _echo("entire           not enabled by preftool; left alone")
+
+    # `entire disable --uninstall` strips its hooks but leaves an empty `{}`
+    # settings file behind. An empty settings file has no effect; drop it.
+    settings = repo / ".claude" / "settings.json"
+    if settings.exists():
+        try:
+            if json.loads(settings.read_text(encoding="utf-8")) == {}:
+                settings.unlink()
+                _echo("settings.json    removed (was empty)")
+        except ValueError:
+            pass
+
+    # An empty .claude/ that only ever held our file is ours to remove.
+    claude_dir = repo / ".claude"
+    if claude_dir.is_dir() and not any(claude_dir.iterdir()):
+        claude_dir.rmdir()
+        _echo("`.claude/`       removed (was empty)")
+
+    data = _data(repo)
+    if purge:
+        shutil.rmtree(data, ignore_errors=True)
+        _echo(f"{DATA_LABEL}       deleted")
+    elif data.is_dir():
+        _echo(f"{DATA_LABEL}       kept at {data}")
+        _echo("                 send it to the researchers, then re-run with --purge")
+
+    _echo("")
+    _echo("This repo is clean. To remove preftool from your machine entirely,")
+    _echo("run ./uninstall.sh in the preftool checkout.")
 
 
 # ----------------------------------------------------------- participant flow
@@ -309,6 +366,7 @@ def start(
     participant: Annotated[str, typer.Argument(help="Participant id, e.g. P01.")],
     repo: RepoOpt = Path("."),
     arm: Annotated[str, typer.Option("--arm")] = "treatment",
+    use_entire: Annotated[bool, typer.Option("--entire/--no-entire", help="Also enable Entire capture in this repo.")] = False,
 ) -> None:
     """Step 1 of 3 — set up this repo for the study. Run once, then work normally."""
     repo = Path(repo).resolve()
@@ -329,14 +387,27 @@ def start(
     _write_json(_config_path(repo), {"participant_id": participant, "arm": arm})
     inject_mod.git_exclude(repo)
 
-    if sources.has_entire():
+    if not use_entire:
+        # Off by default: enabling Entire writes git hooks and rewrites the
+        # participant's .claude/settings.json. Claude Code's own transcripts
+        # are enough, so we do not pay that cost unless asked.
+        _echo("entire           not used (--entire to enable)")
+    elif not sources.has_entire():
+        _echo("entire           requested but binary not found; skipping")
+    else:
+        already = (repo / ".entire").is_dir()
         proc = subprocess.run(
             ["entire", "enable", "-y", "--agent", "claude-code"],
             capture_output=True, text=True, cwd=str(repo),
         )
-        _echo(f"entire           {'enabled' if proc.returncode == 0 else 'not enabled'}")
-    else:
-        _echo("entire           not installed - using Claude Code's own transcripts")
+        ok = proc.returncode == 0
+        _echo(f"entire           {'enabled' if ok else 'not enabled'}")
+        if ok and not already:
+            # Remember that WE turned it on, so uninstall can turn it back off
+            # without touching a participant who was already using Entire.
+            config = _read_config(repo)
+            config["entire_enabled_by_preftool"] = True
+            _write_json(_config_path(repo), config)
 
     _echo(f"participant      {participant}")
     _echo(f"arm              {arm}")
