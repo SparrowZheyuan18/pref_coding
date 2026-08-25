@@ -60,18 +60,21 @@ Nothing else is required, and no account is needed.
 
 ## Uninstalling
 
-When a participant is done, in each repo they used:
+`preftool finish` already writes a single zip to the home directory — that is
+the file to send back. Afterwards, in each repo that was used:
 
 ```bash
-preftool uninstall           # undo everything in this repo, keep the data
-# ... send .preftool/ to the researchers ...
-preftool uninstall --purge   # then delete the data too
+preftool uninstall
 ```
 
-That removes the block from `.claude/CLAUDE.md` (leaving anything the
-participant wrote around it byte for byte), takes our lines back out of
-`.git/info/exclude`, and — only if `preftool start --entire` turned it on —
-runs `entire disable --uninstall`.
+One run, no flags. It removes the block from `.claude/CLAUDE.md` (leaving
+anything the participant wrote around it byte for byte), takes our lines back
+out of `.git/info/exclude`, runs `entire disable --uninstall` if — and only if —
+`preftool start --entire` turned it on, and deletes `.preftool/`.
+
+The data is never lost to this command: it archives `.preftool/` before removing
+it, reusing the zip `finish` already made rather than producing a second one.
+`--keep-data` leaves the directory in place instead.
 
 Then, to remove the tool from the machine:
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -284,7 +285,7 @@ def verify(
 @app.command()
 def uninstall(
     repo: RepoOpt = Path("."),
-    purge: Annotated[bool, typer.Option("--purge", help="Also delete .preftool/ (the collected data).")] = False,
+    keep_data: Annotated[bool, typer.Option("--keep-data", help="Leave .preftool/ in place instead of archiving and removing it.")] = False,
     keep_entire: Annotated[bool, typer.Option("--keep-entire", help="Leave Entire enabled.")] = False,
 ) -> None:
     """Undo everything preftool did to this repo."""
@@ -330,16 +331,27 @@ def uninstall(
         _echo("`.claude/`       removed (was empty)")
 
     data = _data(repo)
-    if purge:
-        shutil.rmtree(data, ignore_errors=True)
-        _echo(f"{DATA_LABEL}       deleted")
-    elif data.is_dir():
+    archive = None
+    if keep_data:
         _echo(f"{DATA_LABEL}       kept at {data}")
-        _echo("                 send it to the researchers, then re-run with --purge")
+    elif data.is_dir():
+        # Always archive before deleting: this command must never be the reason
+        # a participant's data is gone.
+        archive = _archive_data(repo)
+        shutil.rmtree(data, ignore_errors=True)
+        _echo(f"{DATA_LABEL}       archived and removed")
 
     _echo("")
-    _echo("This repo is clean. To remove preftool from your machine entirely,")
-    _echo("run ./uninstall.sh in the preftool checkout.")
+    if archive:
+        _echo("This repo is clean. Your data was saved to:")
+        _echo("")
+        _echo(f"    {archive}")
+        _echo("")
+        _echo("Send that file to the researchers if you have not already.")
+    else:
+        _echo("This repo is clean.")
+    _echo("To remove preftool from your machine, run ./uninstall.sh in the")
+    _echo("preftool checkout.")
 
 
 # ----------------------------------------------------------- participant flow
@@ -349,6 +361,35 @@ def uninstall(
 
 def _config_path(repo: Path) -> Path:
     return _data(repo) / "config.json"
+
+
+def _archive_data(repo: Path, *, refresh: bool = False) -> Path | None:
+    """Zip `.preftool/` into the home directory so there is exactly one file to
+    hand back. Returns the archive path, or None if there was nothing to pack.
+
+    `refresh=True` replaces an existing archive (the data has moved on);
+    otherwise an existing one is reused, so a participant is never left holding
+    several zips wondering which to send.
+    """
+    repo = Path(repo).resolve()
+    data = _data(repo)
+    if not data.is_dir() or not any(data.rglob("*")):
+        return None
+
+    config = _read_config(repo)
+    existing = config.get("archive_path")
+    if existing and Path(existing).exists():
+        if not refresh:
+            return Path(existing)
+        Path(existing).unlink()
+
+    participant = config.get("participant_id", "unknown")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    base = Path.home() / f"preftool-{participant}-{repo.name}-{stamp}"
+    archive = Path(shutil.make_archive(str(base), "zip", root_dir=data))
+    config["archive_path"] = str(archive)
+    _write_json(_config_path(repo), config)
+    return archive
 
 
 def _read_config(repo: Path) -> dict:
@@ -469,7 +510,15 @@ def finish(repo: RepoOpt = Path(".")) -> None:
         _echo("so CLAUDE.md was never re-read. Quit it, run `claude --continue`,")
         _echo("work for a few turns, then run `preftool finish` again.")
         _echo("")
-    _echo(f"Done. Send us the folder:  {_data(repo)}")
+    archive = _archive_data(repo, refresh=True)
+    if archive:
+        _echo("Done. Send us this one file:")
+        _echo("")
+        _echo(f"    {archive}")
+        _echo("")
+        _echo("Then, to remove preftool from this repo:  preftool uninstall")
+    else:
+        _echo("Done, but nothing was collected - was `preftool start` run here?")
 
 
 @app.command(name="status")
