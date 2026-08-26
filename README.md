@@ -98,7 +98,7 @@ available:
 ```bash
 preftool capture [--source auto|entire|claude-code]
 preftool normalize <transcript.jsonl>
-preftool extract [--placeholder | --mock | --real-ish default]
+preftool extract [--test | --mock]        # no flag = the real judge
 preftool apply --participant P01 --arm treatment
 preftool verify [injection_id]
 preftool status
@@ -113,7 +113,67 @@ uv pip install -e ".[dev]"
 pytest -q
 ```
 
-Python >= 3.11. Runtime dependencies are just `pydantic>=2.6` and `typer>=0.12`.
+Python >= 3.11. Participants only need `pydantic>=2.6` and `typer>=0.12`; the
+judge extractor additionally needs `pandas` and `numpy`, installed with the
+`judge` extra (`uv pip install -e ".[dev,judge]"`).
+
+## The extractor
+
+Extraction is the SWE-Chat preference judge in `src/extraction/`, written by the
+extraction collaborator. It judges each conversational user turn against a
+14-axis rubric (solution scope, refactoring tolerance, verification style, agent
+autonomy, ...), labelling every axis High / Low / N-A with user-grounded
+evidence, then aggregates the turns into a session vector.
+
+`src/preftool/judge.py` adapts it without modifying a line of it:
+
+| Their code expects | What the bridge does |
+|---|---|
+| a SWE-Chat `conversations.parquet` frame | `preftool.swechat` reshapes our `Event`s into the same columns |
+| the OpenAI Responses API | the call goes through the injected `LLMClient`, so it runs behind a mock, the participant's `claude -p`, or a server API - and every call lands in `llm_calls.jsonl` |
+| OpenAI structured output | the response schema is appended to the prompt; `validate_judgment` still enforces it |
+| to return a 14-axis vector | directional axes become `Preference` objects the injection path renders |
+
+`RUBRICS`, `JUDGE_INSTRUCTIONS`, `build_judge_input`, `validate_judgment` and
+`aggregate_judgments` are used exactly as written.
+
+### Modes
+
+```bash
+preftool extract            # the judge, via the participant's `claude -p`
+preftool extract --test     # the reply-marker placeholder; calls no model
+preftool extract --mock     # empty deterministic client; pipeline check only
+```
+
+`--test` is the pilot path: one placeholder preference (the reply marker), so
+the plumbing can be shown end to end before real extraction is trusted.
+`preftool intervene --test` does the same inside the participant flow.
+
+### Three things to settle with the collaborator
+
+**`src/mapping/build_turn_commit_map.py` is a local stand-in.** Their extractor
+imports `build_map`, `extract_actions` and `json_value` from it; the real module
+belongs to the SWE-Chat pipeline and is not in this repo. The stand-in reads
+Claude Code tool inputs for `extract_actions` and returns empty commit edges
+from `build_map`, so no commit-survival evidence reaches the judge. The judge
+treats that evidence as weak corroboration only, so axes are still decided from
+user messages - but the real module should replace this file.
+
+**Their imports are `src.`-absolute** (`from src.extraction.preference_context
+import ...`). That resolves when the SWE-Chat repo runs from its own root, not
+from an installed console script. `preftool/_src_compat.py` registers `src` as
+an alias of the installed packages to bridge it. If upstream switches to
+relative imports, delete that module.
+
+**`specification_granularity` is scored but never injected.** Both its poles
+describe the user ("The user states goals loosely and leaves details to be
+filled in"), so the text is analysis, not an instruction. It stays in the
+session vector; it just does not become a line in CLAUDE.md. If the collaborator
+wants it injected, it needs an agent-facing phrasing.
+
+Also worth knowing: the judge's prompt lives in a Python f-string rather than a
+text file, so `ExtractorConfig.prompt_hash` hashes `JUDGE_INSTRUCTIONS` plus the
+rubric definition instead of a file's bytes. Runs stay reproducible either way.
 
 ## Where transcripts come from
 
