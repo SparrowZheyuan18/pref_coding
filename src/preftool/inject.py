@@ -21,7 +21,7 @@ END = "<!-- preftool:end -->"
 # One stable marker for the whole study, not a fresh one per injection: the
 # demo is "replies start carrying this marker once we inject", and a marker
 # that changes every time cannot show that.
-CANARY_TOKEN = "PREFTOOL-CANARY"
+CANARY_TOKEN = "THIS IS A TEST MESSAGE"
 
 DATA_DIR = ".preftool"
 _EXCLUDE_ENTRIES = (f"/{DATA_DIR}/",)
