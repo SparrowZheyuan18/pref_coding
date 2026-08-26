@@ -211,7 +211,10 @@ class LocalAgentClient(_BaseClient):
         self, *, system: str, user: str, tag: str, max_tokens: int, temperature: float
     ) -> LLMResponse:
         prompt = f"{system}\n\n---\n\n{user}" if system else user
-        cmd = [self.binary, "-p", prompt, "--output-format", "json", *self.extra_args]
+        cmd = [self.binary, "-p", prompt, "--output-format", "json"]
+        if self.model and self.model != "default":
+            cmd += ["--model", self.model]
+        cmd += self.extra_args
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=self.timeout
         )

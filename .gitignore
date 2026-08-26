@@ -5,3 +5,4 @@ __pycache__/
 
 # 研究设计文档，不分发给被试
 preftool-spec.md
+.DS_Store

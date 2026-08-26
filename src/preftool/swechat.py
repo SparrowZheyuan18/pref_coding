@@ -6,7 +6,7 @@ under different names, so this module renames rather than re-derives - the
 transcript is still the single source of truth.
 
 Columns produced (only the ones the extractor actually reads):
-    session_id, user_id, repo_id, turn_number, role, turn_type,
+    session_id, timestamp, user_id, repo_id, turn_number, role, turn_type,
     is_conversational, content, tool_name, tool_input_json
 """
 
@@ -43,6 +43,7 @@ def _row(event: Event) -> dict[str, Any]:
 
     return {
         "session_id": event.session_id,
+        "timestamp": event.ts,
         "user_id": event.session_id,  # no participant identity in the transcript
         "repo_id": "",
         "turn_number": event.idx,
