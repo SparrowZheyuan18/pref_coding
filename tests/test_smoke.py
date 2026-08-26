@@ -435,3 +435,34 @@ def test_descriptive_axes_are_not_injected():
     assert vector["axes"]["specification_granularity"]["majority_score"] == -1
     # ... but never becomes an injected instruction
     assert vector_to_preferences(vector, validated, "s1") == []
+
+
+def test_local_agent_never_persists_its_own_sessions(monkeypatch, tmp_path: Path):
+    """The judge's own `claude -p` calls must not land in the participant's
+    project directory - `preftool capture` would read them back in as if they
+    were the participant's conversation, and the next extraction would judge
+    the judge."""
+    from preftool import llm as llm_mod
+
+    recorded: dict[str, list[str]] = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = '{"result": "[]"}'
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        recorded["cmd"] = cmd
+        return _Proc()
+
+    fake_binary = tmp_path / "claude"
+    fake_binary.write_text("")
+    monkeypatch.setattr(llm_mod.shutil, "which", lambda _name: str(fake_binary))
+    monkeypatch.setattr(llm_mod.subprocess, "run", fake_run)
+
+    client = llm_mod.LocalAgentClient(model="haiku")
+    client.complete(system="s", user="u", tag="judge.turn0")
+
+    assert "--no-session-persistence" in recorded["cmd"]
+    assert "--model" in recorded["cmd"]  # the requested model actually reaches claude
+    assert recorded["cmd"][recorded["cmd"].index("--model") + 1] == "haiku"
