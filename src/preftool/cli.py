@@ -425,7 +425,17 @@ def start(
     found = sources.claude_transcripts(repo)
     _echo(f"past sessions    {len(found)} transcript(s) found for this repo")
 
-    _write_json(_config_path(repo), {"participant_id": participant, "arm": arm})
+    # started_at marks the pre/post boundary. Nothing filters on it yet, but it
+    # cannot be reconstructed later, so it is recorded from the first run.
+    _write_json(
+        _config_path(repo),
+        {
+            "participant_id": participant,
+            "arm": arm,
+            "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "prior_transcripts": len(found),
+        },
+    )
     inject_mod.git_exclude(repo)
 
     if not use_entire:
