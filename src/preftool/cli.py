@@ -175,10 +175,10 @@ def normalize(
 @app.command()
 def extract(
     repo: RepoOpt = Path("."),
-    mock: Annotated[bool, typer.Option("--mock", help="Deterministic empty client; no network, no cost.")] = False,
-    placeholder: Annotated[bool, typer.Option("--placeholder", help="Test phase: emit the reply-marker preference, call no model.")] = False,
+    test: Annotated[bool, typer.Option("--test", help="Test mode: emit the reply-marker preference instead of judging. Calls no model.")] = False,
+    mock: Annotated[bool, typer.Option("--mock", help="Deterministic empty client; no network, no cost. Pipeline check only.")] = False,
     max_preferences: Annotated[int, typer.Option("--max-preferences")] = 20,
-    chunk_turns: Annotated[int, typer.Option("--chunk-turns")] = 20,
+    max_turns: Annotated[Optional[int], typer.Option("--max-turns", help="Judge only the most recent N user turns.")] = None,
     model: Annotated[str, typer.Option("--model")] = "default",
 ) -> None:
     """Run the extractor over every stored session."""
@@ -187,14 +187,14 @@ def extract(
         _echo(f"no sessions under {_sessions(repo)} - run `preftool normalize` first")
         raise typer.Exit(1)
 
-    if placeholder:
+    if test:
         result = placeholder_result(events)
     else:
         llm: LLMClient = (
             MockLLMClient({"*": "[]"}) if mock else LocalAgentClient(model=model)
         )
         config = ExtractorConfig(
-            model=model, chunk_turns=chunk_turns, max_preferences=max_preferences
+            model=model, max_preferences=max_preferences, judge_max_turns=max_turns
         )
         result = extract_preferences(events, llm, config)
 
@@ -460,7 +460,7 @@ def start(
 @app.command()
 def intervene(
     repo: RepoOpt = Path("."),
-    real: Annotated[bool, typer.Option("--real", help="Run the real extractor instead of the placeholder.")] = False,
+    test: Annotated[bool, typer.Option("--test", help="Inject the reply-marker placeholder instead of extracted preferences.")] = False,
 ) -> None:
     """Step 2 of 3 — capture, extract, inject. Run at the intervention point."""
     repo = Path(repo)
@@ -469,7 +469,7 @@ def intervene(
     capture(repo=repo)
     _echo("")
     _echo("--- extract ---")
-    extract(repo=repo, placeholder=not real, mock=False)
+    extract(repo=repo, test=test, mock=False)
     _echo("")
     _echo("--- apply ---")
     apply(

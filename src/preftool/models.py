@@ -87,6 +87,7 @@ class ExtractorConfig(BaseModel):
     max_preferences: int = 20
     min_evidence: int = 2
     prompt_hash: str | None = None
+    judge_max_turns: int | None = None  # cap on user turns sent to the judge
 
 
 class ExtractionResult(BaseModel):

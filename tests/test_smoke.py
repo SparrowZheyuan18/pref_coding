@@ -55,43 +55,6 @@ RAW_TRANSCRIPT = [
     {"some_unknown_shape": True},
 ]
 
-MAP_JSON = json.dumps(
-    [
-        {
-            "statement": "Run the test suite before committing.",
-            "polarity": "prefer",
-            "category": "validation",
-            "trigger_signal": "explicit_instruction",
-            "confidence": 0.9,
-            "evidence": [{"event_idx": 0, "excerpt": "always run the tests"}],
-        }
-    ]
-)
-
-REDUCE_JSON = "```json\n" + json.dumps(
-    [
-        {
-            "statement": "Run the test suite before committing.",
-            "polarity": "prefer",
-            "category": "validation",
-            "trigger_signal": "explicit_instruction",
-            "confidence": 0.9,
-            "priority": 10,
-            "evidence": [{"event_idx": 0, "excerpt": "always run the tests"}],
-        },
-        {
-            "statement": "Edit files outside the requested scope.",
-            "polarity": "avoid",
-            "category": "workflow",
-            "trigger_signal": "user_correction",
-            "confidence": 0.7,
-            "priority": 20,
-            "evidence": [{"event_idx": 6, "excerpt": "don't touch files"}],
-        },
-    ]
-) + "\n```"
-
-
 def _events():
     return normalize_records(RAW_TRANSCRIPT, session_id="s1", agent="claude-code")
 
@@ -145,24 +108,50 @@ def test_normalize():
     assert all(e.raw is None for e in events)  # keep_raw defaults to False
 
 
+def _judgment(**overrides) -> str:
+    """A complete, valid 14-axis judgment; overrides replace single axes."""
+    from extraction.preference_judge import RUBRIC_IDS
+
+    axes = {
+        axis: {"label": "na", "confidence": "low", "rationale": "no signal", "evidence": []}
+        for axis in RUBRIC_IDS
+    }
+    axes.update(overrides)
+    return json.dumps({"axes": axes})
+
+
+DIRECTIONAL = _judgment(
+    solution_scope={
+        "label": "low", "confidence": "high",
+        "rationale": "user asked not to touch unrelated files",
+        "evidence": [{"source": "target_user_message", "turn_number": 0,
+                      "quote": "don't touch files I didn't ask about"}],
+    },
+    verification_testing_style={
+        "label": "high", "confidence": "medium",
+        "rationale": "user wants tests run first",
+        "evidence": [{"source": "target_user_message", "turn_number": 0,
+                      "quote": "always run the tests"}],
+    },
+)
+
+
 def test_extract_is_deterministic_under_mock():
     events = _events()
-    responses = {"reduce": REDUCE_JSON, "*": MAP_JSON}
-    config = ExtractorConfig(chunk_turns=1)
+    config = ExtractorConfig()
 
-    first = extract_preferences(events, MockLLMClient(responses), config)
-    second = extract_preferences(events, MockLLMClient(responses), config)
+    first = extract_preferences(events, MockLLMClient({"*": DIRECTIONAL}), config)
+    second = extract_preferences(events, MockLLMClient({"*": DIRECTIONAL}), config)
 
     assert first.preferences == second.preferences
-    assert [p.statement for p in first.preferences] == [
-        "Run the test suite before committing.",
-        "Edit files outside the requested scope.",
-    ]
+    assert {p.id for p in first.preferences} == {
+        "solution_scope", "verification_testing_style"
+    }
     assert first.llm_calls and second.llm_calls
     assert [c.tag for c in first.llm_calls] == [c.tag for c in second.llm_calls]
-    assert "reduce" in [c.tag for c in first.llm_calls]
+    assert all(c.tag.startswith("judge.turn") for c in first.llm_calls)
     assert first.diagnostics["parse_failures"] == 0
-    assert first.diagnostics["n_events"] == len(events)
+    assert first.diagnostics["extractor"] == "swechat_judge"
     assert first.config.prompt_hash and len(first.config.prompt_hash) == 16
     assert first.config.prompt_hash == second.config.prompt_hash
 
@@ -170,12 +159,43 @@ def test_extract_is_deterministic_under_mock():
     assert all(p.evidence for p in first.preferences)
 
 
+def test_extract_maps_axis_direction_to_the_rubric_text():
+    from extraction.preference_judge import RUBRICS
+
+    rubrics = {r["id"]: r for r in RUBRICS}
+    result = extract_preferences(_events(), MockLLMClient({"*": DIRECTIONAL}))
+    by_id = {p.id: p for p in result.preferences}
+
+    # `low` on an axis must inject that axis's low pole, not its high pole
+    assert by_id["solution_scope"].statement == rubrics["solution_scope"]["low"]
+    assert (
+        by_id["verification_testing_style"].statement
+        == rubrics["verification_testing_style"]["high"]
+    )
+
+
+def test_extract_drops_axes_without_user_evidence():
+    """An `na` everywhere judgment yields nothing to inject."""
+    result = extract_preferences(_events(), MockLLMClient({"*": _judgment()}))
+    assert result.preferences == []
+    assert result.diagnostics["parse_failures"] == 0
+    assert result.diagnostics["n_candidates"] > 0  # judged, just not directional
+
+
 def test_extract_survives_unparseable_response():
     events = _events()
     result = extract_preferences(
-        events, MockLLMClient({"*": "sorry, I cannot help with that"}),
-        ExtractorConfig(chunk_turns=1),
+        events, MockLLMClient({"*": "sorry, I cannot help with that"})
     )
+    assert result.preferences == []
+    assert result.diagnostics["parse_failures"] > 0
+
+
+def test_extract_rejects_a_judgment_missing_axes():
+    """Schema violations are counted, not raised."""
+    bad = json.dumps({"axes": {"solution_scope": {"label": "low", "confidence": "high",
+                                                  "rationale": "x", "evidence": []}}})
+    result = extract_preferences(_events(), MockLLMClient({"*": bad}))
     assert result.preferences == []
     assert result.diagnostics["parse_failures"] > 0
 
@@ -387,3 +407,31 @@ def test_project_slug_matches_claude_layout():
     from preftool.sources import project_slug
 
     assert project_slug(Path("/Users/zzy/Desktop/pref_tool")) == "-Users-zzy-Desktop-pref-tool"
+
+
+def test_descriptive_axes_are_not_injected():
+    """Specification granularity describes the user, not the agent's job.
+
+    Its rubric poles read "The user states goals loosely..." - true as analysis,
+    nonsense as an instruction in CLAUDE.md.
+    """
+    from preftool.judge import vector_to_preferences
+
+    judgment = json.loads(
+        _judgment(
+            specification_granularity={
+                "label": "low", "confidence": "high", "rationale": "loose goals",
+                "evidence": [{"source": "target_user_message", "turn_number": 0,
+                              "quote": "make it work somehow"}],
+            }
+        )
+    )
+    from extraction.preference_judge import aggregate_judgments, validate_judgment
+
+    validated = [validate_judgment(judgment)]
+    vector = aggregate_judgments(validated, level="session")
+
+    # the axis is scored in the vector ...
+    assert vector["axes"]["specification_granularity"]["majority_score"] == -1
+    # ... but never becomes an injected instruction
+    assert vector_to_preferences(vector, validated, "s1") == []
