@@ -6,3 +6,8 @@ __pycache__/
 # 研究设计文档，不分发给被试
 preftool-spec.md
 .DS_Store
+
+# SWE-Chat pipeline pieces that preftool does not run (kept locally only)
+src/ingestion/
+src/vectorization/
+src/swe-chat-stats/
