@@ -113,9 +113,10 @@ uv pip install -e ".[dev]"
 pytest -q
 ```
 
-Python >= 3.11. Participants only need `pydantic>=2.6` and `typer>=0.12`; the
-judge extractor additionally needs `pandas` and `numpy`, installed with the
-`judge` extra (`uv pip install -e ".[dev,judge]"`).
+Python >= 3.11. Dependencies are `pydantic`, `typer`, and `pandas`/`numpy` —
+the latter two only because the collaborator's extractor operates on pandas
+frames; nothing in preftool itself uses them. The judge is imported lazily so a
+broken or missing pandas cannot stop `preftool uninstall` from working.
 
 ## The extractor
 

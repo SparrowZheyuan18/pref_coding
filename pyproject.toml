@@ -7,12 +7,14 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.6",
     "typer>=0.12",
+    # Required by the collaborator's extractor under src/extraction/, which
+    # operates on pandas frames. preftool itself does not use them.
+    "pandas>=2.0",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-# The SWE-Chat judge extractor only. Participants do not need these.
-judge = ["pandas>=2.0", "numpy>=1.26"]
 
 [project.scripts]
 preftool = "preftool.cli:app"

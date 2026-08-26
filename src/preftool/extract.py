@@ -1,5 +1,9 @@
 """Extractor entry points.
 
+The judge is imported lazily. It pulls in pandas through the collaborator's
+code, and nothing else in the tool needs that - a participant must still be
+able to run `preftool uninstall` if their environment is broken.
+
 The real extraction logic is the collaborator's SWE-Chat preference judge under
 `src/extraction/`; `preftool.judge` adapts it to our event format and injected
 LLM client. This module keeps the two contract functions the rest of the tool
@@ -11,8 +15,9 @@ clients, no environment variables, no printing. The LLM client is injected.
 
 from __future__ import annotations
 
+import hashlib
+
 from preftool.inject import CANARY_TOKEN, render_block_body
-from preftool.judge import extract_preferences_via_judge, prompt_hash
 from preftool.llm import LLMClient
 from preftool.models import (
     Event,
@@ -30,6 +35,13 @@ __all__ = [
 ]
 
 
+def prompt_hash() -> str:
+    """Hash of the judge prompt and rubric. Imports the judge, so not free."""
+    from preftool.judge import prompt_hash as _judge_prompt_hash
+
+    return _judge_prompt_hash()
+
+
 def placeholder_result(events: list[Event]) -> ExtractionResult:
     """Test-phase stand-in for the real extractor.
 
@@ -38,14 +50,20 @@ def placeholder_result(events: list[Event]) -> ExtractionResult:
     plumbing can be demonstrated end to end before any extraction logic exists.
     No model is called.
     """
-    config = ExtractorConfig(model="placeholder", prompt_hash=prompt_hash())
+    statement = (
+        f"Begin every reply with `{CANARY_TOKEN}` on its own line, before any "
+        "other text. Do this in every turn, including short answers."
+    )
+    # Hash the placeholder text, not the judge prompt: this path never calls
+    # the judge, and recording its hash would misattribute the run.
+    config = ExtractorConfig(
+        model="placeholder",
+        prompt_hash=hashlib.sha256(statement.encode("utf-8")).hexdigest()[:16],
+    )
     session_id = events[0].session_id if events else ""
     pref = Preference(
         id="placeholder-marker",
-        statement=(
-            f"Begin every reply with `{CANARY_TOKEN}` on its own line, before any "
-            "other text. Do this in every turn, including short answers."
-        ),
+        statement=statement,
         polarity="prefer",
         scope="repo",
         category="communication",
@@ -85,6 +103,8 @@ def extract_preferences(
     Signature fixed by the data contract; the body delegates to
     `preftool.judge`.
     """
+    from preftool.judge import extract_preferences_via_judge
+
     return extract_preferences_via_judge(events, llm, config)
 
 
