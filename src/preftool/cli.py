@@ -112,8 +112,10 @@ def capture(
     Claude Code already writes locally - so a participant needs no extra setup.
     """
     repo = Path(repo)
+    # Not printed: `resolved` can still change below when Entire is installed
+    # but has no active session, so announcing it here would be wrong as often
+    # as it is right.
     resolved = sources.resolve_source(repo, source)
-    _echo(f"source           {resolved}")
 
     transcripts: list[Path] = []
     if resolved == "entire":
@@ -129,7 +131,6 @@ def capture(
             if source != "auto":
                 _echo(f"entire failed: {exc}")
                 raise typer.Exit(1)
-            _echo(f"  entire unavailable ({exc}); falling back to claude-code")
             resolved = "claude-code"
 
     if resolved != "entire":
@@ -297,21 +298,19 @@ def uninstall(
 
     _echo(f"git exclude      {'cleaned' if inject_mod.git_unexclude(repo) else 'nothing to clean'}")
 
-    if config.get("entire_enabled_by_preftool") and not keep_entire:
-        if sources.has_entire():
-            # --uninstall also removes .entire/, the git hooks, session state
-            # and the agent hooks it wrote into .claude/settings.json.
-            proc = subprocess.run(
-                ["entire", "disable", "--uninstall", "--force"],
-                capture_output=True, text=True, cwd=str(repo),
-            )
-            _echo(f"entire           {'disabled' if proc.returncode == 0 else 'could not disable: ' + (proc.stderr or proc.stdout).strip()[:80]}")
-        else:
-            _echo("entire           binary gone; run `entire disable` yourself if needed")
-    elif config.get("entire_enabled_by_preftool"):
-        _echo("entire           left enabled (--keep-entire)")
-    else:
-        _echo("entire           not enabled by preftool; left alone")
+    # Only undo what we turned on, and say nothing about it: a participant who
+    # never opted into Entire should not see it mentioned.
+    if (
+        config.get("entire_enabled_by_preftool")
+        and not keep_entire
+        and sources.has_entire()
+    ):
+        # --uninstall also removes .entire/, the git hooks, session state and
+        # the agent hooks it wrote into .claude/settings.json.
+        subprocess.run(
+            ["entire", "disable", "--uninstall", "--force"],
+            capture_output=True, text=True, cwd=str(repo),
+        )
 
     # `entire disable --uninstall` strips its hooks but leaves an empty `{}`
     # settings file behind. An empty settings file has no effect; drop it.
@@ -438,21 +437,17 @@ def start(
     )
     inject_mod.git_exclude(repo)
 
-    if not use_entire:
-        # Off by default: enabling Entire writes git hooks and rewrites the
-        # participant's .claude/settings.json. Claude Code's own transcripts
-        # are enough, so we do not pay that cost unless asked.
-        _echo("entire           not used (--entire to enable)")
-    elif not sources.has_entire():
-        _echo("entire           requested but binary not found; skipping")
-    else:
+    # Off by default: enabling Entire writes git hooks and rewrites the
+    # participant's .claude/settings.json. Claude Code's own transcripts are
+    # enough, so we do not pay that cost unless asked. Silent either way -
+    # a participant who never opted in should not read about it.
+    if use_entire and sources.has_entire():
         already = (repo / ".entire").is_dir()
         proc = subprocess.run(
             ["entire", "enable", "-y", "--agent", "claude-code"],
             capture_output=True, text=True, cwd=str(repo),
         )
         ok = proc.returncode == 0
-        _echo(f"entire           {'enabled' if ok else 'not enabled'}")
         if ok and not already:
             # Remember that WE turned it on, so uninstall can turn it back off
             # without touching a participant who was already using Entire.
