@@ -64,6 +64,7 @@ def placeholder_result(events: list[Event]) -> ExtractionResult:
     pref = Preference(
         id="placeholder-marker",
         statement=statement,
+        rationale="Test-only marker; not inferred from participant behavior.",
         polarity="prefer",
         scope="repo",
         category="communication",

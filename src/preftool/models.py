@@ -56,6 +56,9 @@ class EvidenceRef(BaseModel):
 class Preference(BaseModel):
     id: str
     statement: str
+    # Why the cited user text supports this preference. Kept separate from
+    # evidence excerpts so excerpts remain verbatim, auditable quotes.
+    rationale: str = ""
     polarity: Polarity = "prefer"
     scope: Scope = "repo"
     category: Category = "other"

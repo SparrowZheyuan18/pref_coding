@@ -30,6 +30,7 @@ from extraction.preference_judge import (
     JUDGE_RESPONSE_SCHEMA,
     RUBRICS,
     aggregate_judgments,
+    aggregate_user_sessions,
     build_judge_input,
     validate_judgment,
 )
@@ -96,12 +97,15 @@ def _judge_turn(
 ) -> dict[str, Any] | None:
     """One turn -> one validated judgment, or None if the model's output was
     unusable. A bad judgment is data (a parse failure), never an exception."""
-    response = llm.complete(
-        system=JUDGE_INSTRUCTIONS + _SCHEMA_INSTRUCTION,
-        user=build_judge_input(context),
-        tag=tag,
-        temperature=temperature,
-    )
+    try:
+        response = llm.complete(
+            system=JUDGE_INSTRUCTIONS + _SCHEMA_INSTRUCTION,
+            user=build_judge_input(context),
+            tag=tag,
+            temperature=temperature,
+        )
+    except Exception:  # the client records the concrete error for the audit log
+        return None
     parsed = parse_json_response(response.text)
     if not isinstance(parsed, dict):
         return None
@@ -120,10 +124,12 @@ def _confidence(axis: dict[str, Any]) -> float:
     the session supported the axis at all. A single supporting turn out of forty
     should not read as certainty.
     """
-    support = int(axis.get("support", 0))
+    support = int(axis.get("support", axis.get("supported_sessions", 0)))
     if support == 0:
         return 0.0
-    agreement = max(axis.get("high_count", 0), axis.get("low_count", 0)) / support
+    high = int(axis.get("high_count", axis.get("high_sessions", 0)))
+    low = int(axis.get("low_count", axis.get("low_sessions", 0)))
+    agreement = max(high, low) / support
     coverage = min(1.0, support / 5.0)  # five agreeing turns is as good as it gets
     return round(max(0.0, min(1.0, agreement * (0.5 + 0.5 * coverage))), 2)
 
@@ -132,7 +138,7 @@ def _evidence_for(
     axis_id: str, judgments: list[dict[str, Any]], score: int, session_id: str
 ) -> list[EvidenceRef]:
     refs: list[EvidenceRef] = []
-    seen: set[tuple[int, str]] = set()
+    seen: set[tuple[str, int, str]] = set()
     for judgment in judgments:
         axis = judgment["axes"][axis_id]
         if axis.get("score") != score:
@@ -140,13 +146,40 @@ def _evidence_for(
         for item in axis.get("evidence") or []:
             turn = item.get("turn_number")
             quote = str(item.get("quote", ""))[:200]
-            if not isinstance(turn, int) or (turn, quote) in seen:
+            evidence_session_id = str(
+                judgment.get("event", {}).get("session_id") or session_id
+            )
+            if not isinstance(turn, int):
                 continue
-            seen.add((turn, quote))
+            key = (evidence_session_id, turn, quote)
+            if key in seen:
+                continue
+            seen.add(key)
             refs.append(
-                EvidenceRef(session_id=session_id, event_idx=turn, excerpt=quote)
+                EvidenceRef(
+                    session_id=evidence_session_id,
+                    event_idx=turn,
+                    excerpt=quote,
+                )
             )
     return refs
+
+
+def _rationale_for(
+    axis_id: str, judgments: list[dict[str, Any]], score: int
+) -> str:
+    """Retain concise, unique reasoning from judgments supporting the winner."""
+    reasons: list[str] = []
+    for judgment in judgments:
+        axis = judgment["axes"][axis_id]
+        if axis.get("score") != score:
+            continue
+        reason = " ".join(str(axis.get("rationale", "")).split())
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    # Three distinct observations are enough to explain an aggregate while
+    # keeping result.json and downstream displays reasonably compact.
+    return " ".join(reasons[:3])[:600]
 
 
 def vector_to_preferences(
@@ -171,21 +204,25 @@ def vector_to_preferences(
         evidence = _evidence_for(axis_id, judgments, score, session_id)
         if not evidence:
             continue  # a preference without evidence is a hallucination
+        rationale = _rationale_for(axis_id, judgments, score)
         scored.append((
             Preference(
                 id=axis_id,
                 statement=statement,
+                rationale=rationale,
                 polarity="prefer",
                 scope="repo",
                 category=_CATEGORY.get(axis_id, "other"),
                 trigger_signal=(
-                    "repeated_pattern" if int(axis.get("support", 0)) > 1
+                    "repeated_pattern" if int(axis.get(
+                        "support", axis.get("supported_sessions", 0)
+                    )) > 1
                     else "explicit_instruction"
                 ),
                 evidence=evidence,
                 confidence=_confidence(axis),
             ),
-            int(axis.get("support", 0)),
+            int(axis.get("support", axis.get("supported_sessions", 0))),
         ))
 
     # Best-supported axes are injected first, and survive any later truncation.
@@ -205,38 +242,64 @@ def extract_preferences_via_judge(
     """Judge every conversational user turn, aggregate, and render preferences."""
     config = (config or ExtractorConfig()).model_copy(deep=True)
     config.prompt_hash = prompt_hash()
-    session_id = events[0].session_id if events else ""
-
-    conversation = events_to_conversation(events)
-    turns = user_turn_numbers(conversation)
-    if config.judge_max_turns is not None and config.judge_max_turns > 0:
-        # Recent turns carry the most current preferences.
-        turns = turns[-config.judge_max_turns :]
-
     from extraction.preference_context import build_preference_context  # noqa: PLC0415
 
     judgments: list[dict[str, Any]] = []
+    session_vectors: dict[str, dict[str, Any]] = {}
     parse_failures = 0
+    llm_failures = 0
     context_failures = 0
-    for turn in turns:
-        try:
-            context = build_preference_context(conversation, turn)
-        except (ValueError, KeyError, IndexError):
-            context_failures += 1
-            continue
-        judgment = _judge_turn(
-            context, llm, tag=f"judge.turn{turn}", temperature=config.temperature
-        )
-        if judgment is None:
-            parse_failures += 1
-        else:
-            judgments.append(judgment)
+    n_target_turns = 0
+    events_by_session: dict[str, list[Event]] = {}
+    for event in events:
+        events_by_session.setdefault(event.session_id, []).append(event)
+
+    for session_id, session_events in events_by_session.items():
+        conversation = events_to_conversation(session_events)
+        turns = user_turn_numbers(conversation)
+        if config.judge_max_turns is not None and config.judge_max_turns > 0:
+            # Apply the cap independently to every session; otherwise a later
+            # session can silently prevent an earlier session being judged.
+            turns = turns[-config.judge_max_turns :]
+        n_target_turns += len(turns)
+        session_judgments: list[dict[str, Any]] = []
+        for turn in turns:
+            try:
+                context = build_preference_context(conversation, turn)
+            except (ValueError, KeyError, IndexError):
+                context_failures += 1
+                continue
+            calls_before = len(getattr(llm, "calls", []))
+            judgment = _judge_turn(
+                context,
+                llm,
+                tag=f"judge.{session_id}.turn{turn}",
+                temperature=config.temperature,
+            )
+            if judgment is None:
+                new_calls = list(getattr(llm, "calls", []))[calls_before:]
+                if any(call.error for call in new_calls):
+                    llm_failures += 1
+                else:
+                    parse_failures += 1
+            else:
+                judgments.append(judgment)
+                session_judgments.append(judgment)
+        if session_judgments:
+            session_vectors[session_id] = aggregate_judgments(
+                session_judgments, level="session"
+            )
 
     vector: dict[str, Any] = {}
     preferences: list[Preference] = []
-    if judgments:
-        vector = aggregate_judgments(judgments, level="session")
-        preferences = vector_to_preferences(vector, judgments, session_id)
+    if session_vectors:
+        if len(session_vectors) == 1:
+            vector = next(iter(session_vectors.values()))
+        else:
+            # Match the collaborator's user aggregation: each supported
+            # session gets equal weight, regardless of its number of turns.
+            vector = aggregate_user_sessions(session_vectors.values())
+        preferences = vector_to_preferences(vector, judgments)
     preferences = preferences[: config.max_preferences]
 
     return ExtractionResult(
@@ -244,12 +307,20 @@ def extract_preferences_via_judge(
         llm_calls=list(getattr(llm, "calls", [])),
         diagnostics={
             "n_events": len(events),
-            "n_chunks": len(turns),  # one judged turn per chunk here
+            "n_chunks": n_target_turns,  # one judged turn per chunk here
+            "n_sessions": len(events_by_session),
             "n_candidates": len(judgments),
             "n_final": len(preferences),
             "parse_failures": parse_failures,
+            "llm_failures": llm_failures,
             "context_failures": context_failures,
             "extractor": "swechat_judge",
+            "chat_vector": vector.get("axes", {}),
+            "session_vectors": {
+                session_id: item.get("axes", {})
+                for session_id, item in session_vectors.items()
+            },
+            # Kept for compatibility with existing result readers.
             "session_vector": vector.get("axes", {}),
         },
         config=config,

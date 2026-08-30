@@ -149,7 +149,7 @@ def test_extract_is_deterministic_under_mock():
     }
     assert first.llm_calls and second.llm_calls
     assert [c.tag for c in first.llm_calls] == [c.tag for c in second.llm_calls]
-    assert all(c.tag.startswith("judge.turn") for c in first.llm_calls)
+    assert all(c.tag.startswith("judge.s1.turn") for c in first.llm_calls)
     assert first.diagnostics["parse_failures"] == 0
     assert first.diagnostics["extractor"] == "swechat_judge"
     assert first.config.prompt_hash and len(first.config.prompt_hash) == 16
@@ -157,6 +157,32 @@ def test_extract_is_deterministic_under_mock():
 
     # every preference carries evidence - no evidence means hallucination
     assert all(p.evidence for p in first.preferences)
+    assert (
+        next(p for p in first.preferences if p.id == "solution_scope").rationale
+        == "user asked not to touch unrelated files"
+    )
+
+
+def test_extract_keeps_sessions_separate_and_equal_weights_them():
+    """Repeated event indices in separate transcripts must not collide."""
+    first_session = _events()
+    second_session = [
+        event.model_copy(update={"session_id": "s2"}) for event in _events()
+    ]
+    result = extract_preferences(
+        first_session + second_session,
+        MockLLMClient({"*": DIRECTIONAL}),
+    )
+
+    assert result.diagnostics["n_sessions"] == 2
+    assert set(result.diagnostics["session_vectors"]) == {"s1", "s2"}
+    assert result.diagnostics["n_chunks"] == 4
+    assert result.diagnostics["chat_vector"]["solution_scope"][
+        "supported_sessions"
+    ] == 2
+    assert {ref.session_id for pref in result.preferences for ref in pref.evidence} == {
+        "s1", "s2"
+    }
 
 
 def test_extract_maps_axis_direction_to_the_rubric_text():
@@ -174,6 +200,11 @@ def test_extract_maps_axis_direction_to_the_rubric_text():
     )
 
 
+def test_old_preferences_load_without_rationale():
+    pref = Preference.model_validate({"id": "legacy", "statement": "Keep diffs small."})
+    assert pref.rationale == ""
+
+
 def test_extract_drops_axes_without_user_evidence():
     """An `na` everywhere judgment yields nothing to inject."""
     result = extract_preferences(_events(), MockLLMClient({"*": _judgment()}))
@@ -189,6 +220,19 @@ def test_extract_survives_unparseable_response():
     )
     assert result.preferences == []
     assert result.diagnostics["parse_failures"] > 0
+
+
+def test_extract_survives_client_failure():
+    class FailingClient(MockLLMClient):
+        def _complete(self, **kwargs):
+            raise RuntimeError("client is not authenticated")
+
+    result = extract_preferences(_events(), FailingClient())
+    assert result.preferences == []
+    assert result.diagnostics["llm_failures"] == 2
+    assert result.diagnostics["parse_failures"] == 0
+    assert len(result.llm_calls) == 2
+    assert all(call.error for call in result.llm_calls)
 
 
 def test_extract_rejects_a_judgment_missing_axes():
