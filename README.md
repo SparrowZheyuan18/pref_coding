@@ -3,7 +3,7 @@
 Capture, extract and inject **developer preferences** for agentic
 coding.
 
-The study loop is: participants vibe-code in their own repos with Claude Code →
+The study loop is: participants vibe-code in their own repos with Claude Code or Codex →
 their sessions are captured → preferences are extracted from the traces → the
 preferences are injected back into the agent's context → post-intervention
 sessions are captured.
@@ -31,7 +31,8 @@ Simply go into the repo you are coding in:
 ```bash
 cd ~/your-repo
 
-preftool start your_id                 # 1. once, at the beginning
+preftool start your_id                 # Claude Code (default)
+# or: preftool start your_id --agent codex
                                    #    ... then use Claude Code normally ...
 preftool intervene                 # 2. at the intervention point
                                    #    *** quit Claude Code, then `claude --continue` ***
@@ -39,7 +40,8 @@ preftool intervene                 # 2. at the intervention point
 preftool finish                    # 3. at the end
 ```
 
-**Quit Claude Code and open it again after `intervene`.**, then your preference data will be loaded to CLAUDE.md. You will also see your preference data in the terminal. Now you can interact with preference-injected model.
+After `intervene`, restart Claude Code or begin a new Codex task. Preferences are
+written to `.claude/CLAUDE.md` for Claude Code and `AGENTS.md` for Codex.
 
 After all of the interaction, run `preftool finish` to produce a zip at the home directory, and send it back to the researchers.
 
@@ -65,10 +67,10 @@ The three commands above are thin wrappers over the primitives, which stay
 available:
 
 ```bash
-preftool capture [--source auto|entire|claude-code]
+preftool capture [--source auto|entire|claude-code|codex]
 preftool normalize <transcript.jsonl>
-preftool extract [--test | --mock]        # no flag = the real judge
-preftool apply --participant P01 --arm treatment
+preftool extract [--test | --mock] [--agent claude-code|codex]
+preftool apply --participant P01 --arm treatment [--agent claude-code|codex]
 preftool verify [injection_id]
 preftool status
 preftool uninstall

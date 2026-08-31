@@ -1,0 +1,6 @@
+{"timestamp":"2026-08-30T10:00:00Z","type":"session_meta","payload":{"session_id":"codex-session","cwd":"/tmp/example-repo"}}
+{"timestamp":"2026-08-30T10:00:01Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"internal instructions"}]}}
+{"timestamp":"2026-08-30T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Keep this change focused."}]}}
+{"timestamp":"2026-08-30T10:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will inspect one file."}]}}
+{"timestamp":"2026-08-30T10:00:04Z","type":"response_item","payload":{"type":"custom_tool_call","id":"tool-1","call_id":"call-1","name":"exec","input":"{\"cmd\":\"pytest -q\"}"}}
+{"timestamp":"2026-08-30T10:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-1","output":"1 passed"}}

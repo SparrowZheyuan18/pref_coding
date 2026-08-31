@@ -35,6 +35,10 @@ def claude_md_path(repo: Path) -> Path:
     return Path(repo) / ".claude" / "CLAUDE.md"
 
 
+def instruction_path(repo: Path, agent: str = "claude-code") -> Path:
+    return Path(repo) / "AGENTS.md" if agent == "codex" else claude_md_path(repo)
+
+
 def data_dir(repo: Path) -> Path:
     return Path(repo) / DATA_DIR
 
@@ -51,8 +55,8 @@ def _created_marker(repo: Path) -> Path:
     return data_dir(repo) / "created_file"
 
 
-def _outside_sha_path(repo: Path) -> Path:
-    return _backup_dir(repo) / "outside.sha"
+def _outside_sha_path(repo: Path, agent: str = "claude-code") -> Path:
+    return _backup_dir(repo) / ("agents-outside.sha" if agent == "codex" else "outside.sha")
 
 
 def _sha256(text: str) -> str:
@@ -128,22 +132,22 @@ def render_block_body(
     return "\n".join(lines).strip()
 
 
-def upsert_block(repo: Path, body: str) -> tuple[str, bool]:
+def upsert_block(repo: Path, body: str, *, agent: str = "claude-code") -> tuple[str, bool]:
     """Write `body` between the markers. Returns (action, user_edited_outside_block)."""
     repo = Path(repo)
-    path = claude_md_path(repo)
+    path = instruction_path(repo, agent)
     existed = path.exists()
     original = path.read_text(encoding="utf-8") if existed else ""
 
     _backup_dir(repo).mkdir(parents=True, exist_ok=True)
 
     # Full backup before our very first write.
-    backup = _backup_dir(repo) / "CLAUDE.md.orig"
+    backup = _backup_dir(repo) / ("AGENTS.md.orig" if agent == "codex" else "CLAUDE.md.orig")
     if existed and not backup.exists():
         backup.write_text(original, encoding="utf-8")
 
     # Did the participant edit their own content since we last wrote?
-    sha_path = _outside_sha_path(repo)
+    sha_path = _outside_sha_path(repo, agent)
     current_outside = _sha256(_outside_text(original))
     if sha_path.exists():
         user_edited = sha_path.read_text(encoding="utf-8").strip() != current_outside
@@ -156,7 +160,10 @@ def upsert_block(repo: Path, body: str) -> tuple[str, bool]:
         new_content = block + "\n"
         action = "created"
         path.parent.mkdir(parents=True, exist_ok=True)
-        _created_marker(repo).write_text(_utcnow() + "\n", encoding="utf-8")
+        marker = _created_marker(repo)
+        if agent == "codex":
+            marker = marker.with_name("created_agents_file")
+        marker.write_text(_utcnow() + "\n", encoding="utf-8")
     elif parts is not None:
         before, _inside, after = parts
         new_content = before + block + after
@@ -171,10 +178,10 @@ def upsert_block(repo: Path, body: str) -> tuple[str, bool]:
     return action, user_edited
 
 
-def remove_block(repo: Path) -> str:
+def remove_block(repo: Path, *, agent: str = "claude-code") -> str:
     """Remove the block. Deletes the file only if we created it and nothing is left."""
     repo = Path(repo)
-    path = claude_md_path(repo)
+    path = instruction_path(repo, agent)
     if not path.exists():
         return "absent"
 
@@ -188,15 +195,18 @@ def remove_block(repo: Path) -> str:
     # whitespace is normalized.
     remainder = before + after
 
-    if not remainder.strip() and _created_marker(repo).exists():
+    marker = _created_marker(repo)
+    if agent == "codex":
+        marker = marker.with_name("created_agents_file")
+    if not remainder.strip() and marker.exists():
         path.unlink()
-        _created_marker(repo).unlink()
+        marker.unlink()
         action = "removed_file"
     else:
         path.write_text(remainder.rstrip() + "\n" if remainder.strip() else "", encoding="utf-8")
         action = "removed"
 
-    sha_path = _outside_sha_path(repo)
+    sha_path = _outside_sha_path(repo, agent)
     if sha_path.exists():
         sha_path.unlink()
     return action
@@ -258,6 +268,7 @@ def inject(
     with_canary: bool = True,
     max_preferences: int = 20,
     canary_token: str | None = None,
+    agent: str = "claude-code",
 ) -> InjectionRecord:
     repo = Path(repo)
     canary_token = (canary_token or CANARY_TOKEN) if with_canary else None
@@ -272,7 +283,7 @@ def inject(
         max_preferences=max_preferences,
         canary_token=None if in_prefs else canary_token,
     )
-    action, user_edited = upsert_block(repo, body)
+    action, user_edited = upsert_block(repo, body, agent=agent)
     git_exclude(repo)
 
     injected_at = _utcnow()
@@ -283,7 +294,7 @@ def inject(
         injection_id=injection_id,
         participant_id=participant_id,
         repo_path=str(repo.resolve()),
-        channel="claude_md",
+        channel="agents_md" if agent == "codex" else "claude_md",
         action=action,  # type: ignore[arg-type]
         body_hash=_sha256(body),
         n_preferences=min(len(prefs), max_preferences),

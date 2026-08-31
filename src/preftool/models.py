@@ -23,7 +23,7 @@ Category = Literal[
 TriggerSignal = Literal[
     "explicit_instruction", "user_correction", "revert", "repeated_pattern"
 ]
-Channel = Literal["claude_md", "hook", "skill", "manual"]
+Channel = Literal["claude_md", "agents_md", "hook", "skill", "manual"]
 Action = Literal["created", "replaced", "appended", "removed"]
 Arm = Literal["treatment", "placebo", "control"]
 

@@ -7,14 +7,14 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 
 from preftool import inject as inject_mod
 from preftool import sources
 from preftool.extract import extract_preferences, placeholder_result
-from preftool.llm import LLMClient, LocalAgentClient, MockLLMClient
+from preftool.llm import CodexClient, LLMClient, LocalAgentClient, MockLLMClient
 from preftool.models import Event, ExtractionResult, ExtractorConfig, Preference
 from preftool.normalize import coverage, load_transcript
 
@@ -96,6 +96,35 @@ def _load_events(repo: Path) -> list[Event]:
     return events
 
 
+def _judge_turn_count(events: list[Event], max_turns: int | None) -> int:
+    """Number of conversational user turns the extractor will send to the judge."""
+    per_session: dict[str, int] = {}
+    for event in events:
+        if event.role == "user" and event.type == "message":
+            per_session[event.session_id] = per_session.get(event.session_id, 0) + 1
+    if max_turns is not None and max_turns > 0:
+        return sum(min(count, max_turns) for count in per_session.values())
+    return sum(per_session.values())
+
+
+class _ProgressLLMClient:
+    """Transparent LLM wrapper that advances after every attempted call."""
+
+    def __init__(self, delegate: LLMClient, bar: Any) -> None:
+        self.delegate = delegate
+        self.bar = bar
+
+    @property
+    def calls(self):
+        return self.delegate.calls
+
+    def complete(self, **kwargs):
+        try:
+            return self.delegate.complete(**kwargs)
+        finally:
+            self.bar.update(1)
+
+
 # --------------------------------------------------------------------------- commands
 
 
@@ -103,19 +132,23 @@ def _load_events(repo: Path) -> list[Event]:
 def capture(
     repo: RepoOpt = Path("."),
     source: Annotated[
-        str, typer.Option("--source", help="auto | entire | claude-code")
+        str, typer.Option("--source", help="auto | entire | claude-code | codex")
     ] = "auto",
+    agent: Annotated[Optional[str], typer.Option("--agent", help="claude-code | codex")] = None,
 ) -> None:
     """Collect this repo's session transcripts and normalize them.
 
-    `auto` uses Entire when it is installed and falls back to the transcripts
-    Claude Code already writes locally - so a participant needs no extra setup.
+    `auto` follows the agent saved by `preftool start`: Codex rollouts for
+    Codex, otherwise Entire when enabled or Claude Code's local transcripts.
     """
     repo = Path(repo)
     # Not printed: `resolved` can still change below when Entire is installed
     # but has no active session, so announcing it here would be wrong as often
     # as it is right.
-    resolved = sources.resolve_source(repo, source)
+    configured_agent = agent or _read_config(repo).get("agent", "claude-code")
+    if configured_agent not in {"claude-code", "codex"}:
+        raise typer.BadParameter("agent must be 'claude-code' or 'codex'")
+    resolved = "codex" if source == "auto" and configured_agent == "codex" else sources.resolve_source(repo, source)
 
     transcripts: list[Path] = []
     if resolved == "entire":
@@ -133,7 +166,13 @@ def capture(
                 raise typer.Exit(1)
             resolved = "claude-code"
 
-    if resolved != "entire":
+    if resolved == "codex":
+        from preftool.codex import codex_rollouts
+        transcripts = codex_rollouts(repo)
+        if not transcripts:
+            _echo("no Codex rollouts found for this repository")
+            raise typer.Exit(1)
+    elif resolved != "entire":
         transcripts = sources.claude_transcripts(repo)
         if not transcripts:
             _echo(
@@ -144,7 +183,11 @@ def capture(
 
     total = 0
     for transcript in transcripts:
-        events = load_transcript(transcript)
+        if resolved == "codex":
+            from preftool.codex import load_codex_rollout
+            events = load_codex_rollout(transcript)
+        else:
+            events = load_transcript(transcript)
         if not events:
             continue
         _save_session(repo, events)
@@ -181,6 +224,8 @@ def extract(
     max_preferences: Annotated[int, typer.Option("--max-preferences")] = 20,
     max_turns: Annotated[Optional[int], typer.Option("--max-turns", help="Judge only the most recent N user turns.")] = None,
     model: Annotated[str, typer.Option("--model")] = "default",
+    agent: Annotated[Optional[str], typer.Option("--agent", help="claude-code | codex")] = None,
+    progress: Annotated[bool, typer.Option("--progress/--no-progress", help="Show per-turn judge progress.")] = True,
 ) -> None:
     """Run the extractor over every stored session."""
     events = _load_events(repo)
@@ -191,13 +236,24 @@ def extract(
     if test:
         result = placeholder_result(events)
     else:
-        llm: LLMClient = (
-            MockLLMClient({"*": "[]"}) if mock else LocalAgentClient(model=model)
+        configured_agent = agent or _read_config(repo).get("agent", "claude-code")
+        if configured_agent not in {"claude-code", "codex"}:
+            raise typer.BadParameter("agent must be 'claude-code' or 'codex'")
+        llm: LLMClient = MockLLMClient({"*": "[]"}) if mock else (
+            CodexClient(model=model) if configured_agent == "codex"
+            else LocalAgentClient(model=model)
         )
         config = ExtractorConfig(
             model=model, max_preferences=max_preferences, judge_max_turns=max_turns
         )
-        result = extract_preferences(events, llm, config)
+        total_turns = _judge_turn_count(events, max_turns)
+        if progress and total_turns:
+            with typer.progressbar(length=total_turns, label="Judging turns") as bar:
+                result = extract_preferences(
+                    events, _ProgressLLMClient(llm, bar), config  # type: ignore[arg-type]
+                )
+        else:
+            result = extract_preferences(events, llm, config)
 
     out_dir = _extractions(repo) / (result.config.prompt_hash or "unknown")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -229,13 +285,15 @@ def apply(
     arm: Annotated[str, typer.Option("--arm", help="treatment | placebo | control")] = "treatment",
     canary: Annotated[bool, typer.Option("--canary/--no-canary", help="Include the reply-marker placeholder.")] = True,
     max_preferences: Annotated[int, typer.Option("--max-preferences")] = 20,
+    agent: Annotated[Optional[str], typer.Option("--agent", help="claude-code | codex")] = None,
 ) -> None:
-    """Inject the latest extraction into `.claude/CLAUDE.md`."""
+    """Inject the latest extraction into the configured agent's instruction file."""
     latest = _latest(repo)
     if not latest.exists():
         _echo(f"no {latest} - run `preftool extract` first")
         raise typer.Exit(1)
     result = ExtractionResult.model_validate_json(latest.read_text(encoding="utf-8"))
+    configured_agent = agent or _read_config(repo).get("agent", "claude-code")
     prefs: list[Preference] = result.preferences
 
     record = inject_mod.inject(
@@ -245,15 +303,16 @@ def apply(
         arm=arm,  # type: ignore[arg-type]
         with_canary=canary,
         max_preferences=max_preferences,
+        agent=configured_agent,
     )
     _echo(f"action           {record.action}")
     _echo(f"injection_id     {record.injection_id}")
-    _echo(f"file             {inject_mod.claude_md_path(Path(repo))}")
+    _echo(f"file             {inject_mod.instruction_path(Path(repo), configured_agent)}")
     _echo(f"n_preferences    {record.n_preferences}")
     _echo(f"arm              {record.arm}")
     _echo(f"canary_token     {record.canary_token or '(none)'}")
     if record.user_edited_outside_block:
-        _echo("note             participant edited CLAUDE.md outside our block")
+        _echo("note             participant edited the instruction file outside our block")
 
 
 @app.command()
@@ -293,8 +352,9 @@ def uninstall(
     repo = Path(repo).resolve()
     config = _read_config(repo)
 
-    action = inject_mod.remove_block(repo)
-    _echo(f"CLAUDE.md block  {action}")
+    action = inject_mod.remove_block(repo, agent=config.get("agent", "claude-code"))
+    label = "AGENTS.md" if config.get("agent") == "codex" else "CLAUDE.md"
+    _echo(f"{label + ' block':17} {action}")
 
     _echo(f"git exclude      {'cleaned' if inject_mod.git_unexclude(repo) else 'nothing to clean'}")
 
@@ -407,9 +467,12 @@ def start(
     repo: RepoOpt = Path("."),
     arm: Annotated[str, typer.Option("--arm")] = "treatment",
     use_entire: Annotated[bool, typer.Option("--entire/--no-entire", help="Also enable Entire capture in this repo.")] = False,
+    agent: Annotated[str, typer.Option("--agent", help="claude-code | codex")] = "claude-code",
 ) -> None:
     """Step 1 of 3 — set up this repo for the study. Run once, then work normally."""
     repo = Path(repo).resolve()
+    if agent not in {"claude-code", "codex"}:
+        raise typer.BadParameter("agent must be 'claude-code' or 'codex'")
 
     # The single most likely mistake: running this inside the preftool checkout
     # instead of the repo the participant actually codes in.
@@ -421,7 +484,11 @@ def start(
     _echo(f"repo             {repo}")
     if not (repo / ".git").is_dir():
         _echo("git              not a git repo (fine, but Entire capture needs one)")
-    found = sources.claude_transcripts(repo)
+    if agent == "codex":
+        from preftool.codex import codex_rollouts
+        found = codex_rollouts(repo)
+    else:
+        found = sources.claude_transcripts(repo)
     _echo(f"past sessions    {len(found)} transcript(s) found for this repo")
 
     # started_at marks the pre/post boundary. Nothing filters on it yet, but it
@@ -433,6 +500,7 @@ def start(
             "arm": arm,
             "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "prior_transcripts": len(found),
+            "agent": agent,
         },
     )
     inject_mod.git_exclude(repo)
@@ -441,7 +509,7 @@ def start(
     # participant's .claude/settings.json. Claude Code's own transcripts are
     # enough, so we do not pay that cost unless asked. Silent either way -
     # a participant who never opted in should not read about it.
-    if use_entire and sources.has_entire():
+    if use_entire and agent == "claude-code" and sources.has_entire():
         already = (repo / ".entire").is_dir()
         proc = subprocess.run(
             ["entire", "enable", "-y", "--agent", "claude-code"],
@@ -457,8 +525,9 @@ def start(
 
     _echo(f"participant      {participant}")
     _echo(f"arm              {arm}")
+    _echo(f"agent            {agent}")
     _echo("")
-    _echo("Setup done. Now use Claude Code in this repo as you normally would.")
+    _echo(f"Setup done. Now use {'Codex' if agent == 'codex' else 'Claude Code'} in this repo as you normally would.")
     _echo("When you are told to, run:  preftool intervene")
 
 
@@ -470,6 +539,7 @@ def intervene(
     """Step 2 of 3 — capture, extract, inject. Run at the intervention point."""
     repo = Path(repo)
     config = _read_config(repo)
+    agent = config.get("agent", "claude-code")
     _echo("--- capture ---")
     capture(repo=repo)
     _echo("")
@@ -484,15 +554,22 @@ def intervene(
     )
     _echo("")
     _echo("=" * 62)
-    _echo("  Injected. Now QUIT CLAUDE CODE AND OPEN IT AGAIN.")
+    if agent == "codex":
+        _echo("  Injected. Start a new Codex task so AGENTS.md is loaded.")
+    else:
+        _echo("  Injected. Now QUIT CLAUDE CODE AND OPEN IT AGAIN.")
     _echo("")
-    _echo("  CLAUDE.md is read when Claude Code starts, so a session that is")
-    _echo("  already running will not pick this up. You do NOT have to start")
-    _echo("  over: `claude --continue` resumes your conversation and still")
-    _echo("  re-reads the file.")
-    _echo("")
-    _echo("  To confirm it worked: run /context in Claude Code and check that")
-    _echo("  .claude/CLAUDE.md is listed under 'Memory files'.")
+    if agent == "codex":
+        _echo("  Existing tasks may retain their original context; AGENTS.md is the")
+        _echo("  injected project instruction file for subsequent Codex work.")
+    else:
+        _echo("  CLAUDE.md is read when Claude Code starts, so a session that is")
+        _echo("  already running will not pick this up. You do NOT have to start")
+        _echo("  over: `claude --continue` resumes your conversation and still")
+        _echo("  re-reads the file.")
+        _echo("")
+        _echo("  To confirm it worked: run /context in Claude Code and check that")
+        _echo("  .claude/CLAUDE.md is listed under 'Memory files'.")
     _echo("=" * 62)
     _echo("")
     _echo("Then keep working as usual. When you are done:  preftool finish")
@@ -502,6 +579,7 @@ def intervene(
 def finish(repo: RepoOpt = Path(".")) -> None:
     """Step 3 of 3 — capture the post-intervention sessions and check the marker."""
     repo = Path(repo)
+    agent = _read_config(repo).get("agent", "claude-code")
     _echo("--- capture ---")
     capture(repo=repo)
     _echo("")
@@ -511,9 +589,12 @@ def finish(repo: RepoOpt = Path(".")) -> None:
     records = inject_mod.list_records(repo)
     if records and records[-1].verified is False:
         _echo("The marker was not found in any reply captured after the injection.")
-        _echo("Most likely cause: Claude Code was not restarted after `intervene`,")
-        _echo("so CLAUDE.md was never re-read. Quit it, run `claude --continue`,")
-        _echo("work for a few turns, then run `preftool finish` again.")
+        if agent == "codex":
+            _echo("Most likely cause: no new Codex task loaded AGENTS.md after `intervene`.")
+        else:
+            _echo("Most likely cause: Claude Code was not restarted after `intervene`,")
+            _echo("so CLAUDE.md was never re-read. Quit it, run `claude --continue`,")
+        _echo("Work for a few turns, then run `preftool finish` again.")
         _echo("")
     archive = _archive_data(repo, refresh=True)
     if archive:
@@ -530,6 +611,7 @@ def finish(repo: RepoOpt = Path(".")) -> None:
 def status(repo: RepoOpt = Path(".")) -> None:
     """Show what has been captured, extracted and injected in this repo."""
     sessions = sorted(_sessions(repo).glob("*.json")) if _sessions(repo).is_dir() else []
+    _echo(f"agent            {_read_config(repo).get('agent', 'claude-code')}")
     _echo(f"sessions         {len(sessions)}")
     _echo(f"latest.json      {'yes' if _latest(repo).exists() else 'no'}")
     records = inject_mod.list_records(Path(repo))

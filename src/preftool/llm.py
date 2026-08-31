@@ -2,7 +2,7 @@
 
 The extractor never constructs a client itself - one is injected - so the same
 extraction code runs behind a mock (tests), the participant's local `claude -p`
-(pilot), and a server-side API later on.
+or `codex exec`, and a server-side API later on.
 """
 
 from __future__ import annotations
@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Protocol, runtime_checkable
 
 from preftool.models import LLMCall
@@ -250,3 +252,48 @@ class LocalAgentClient(_BaseClient):
         return LLMResponse(
             text=text, model=self.model, input_tokens=in_tok, output_tokens=out_tok
         )
+
+
+class CodexClient(_BaseClient):
+    """Use the participant's authenticated Codex CLI without saving a session."""
+
+    def __init__(self, *, binary: str = "codex", model: str = "default", timeout: int = 900):
+        super().__init__()
+        resolved = shutil.which(binary)
+        if resolved is None and binary == "codex":
+            # Codex Desktop bundles the CLI but does not necessarily add it to
+            # the user's shell PATH. Prefer the normal PATH lookup, then use
+            # the standard macOS app-bundle location.
+            bundled = Path("/Applications/ChatGPT.app/Contents/Resources/codex")
+            if bundled.is_file():
+                resolved = str(bundled)
+        if resolved is None:
+            raise RuntimeError(
+                f"agent binary {binary!r} not found on PATH and no Codex Desktop "
+                "bundle was found"
+            )
+        self.binary, self.model, self.timeout = resolved, model, timeout
+
+    def _complete(self, *, system: str, user: str, tag: str,
+                  max_tokens: int, temperature: float) -> LLMResponse:
+        prompt = f"{system}\n\n---\n\n{user}" if system else user
+        from extraction.preference_judge import JUDGE_RESPONSE_SCHEMA
+
+        with tempfile.TemporaryDirectory(prefix="preftool-codex-") as directory:
+            workdir = Path(directory)
+            output = workdir / "response.json"
+            schema = workdir / "schema.json"
+            schema.write_text(json.dumps(JUDGE_RESPONSE_SCHEMA), encoding="utf-8")
+            cmd = [self.binary, "exec", "--ephemeral", "--sandbox", "read-only",
+                   "--ignore-user-config", "--skip-git-repo-check",
+                   "--output-schema", str(schema),
+                   "--output-last-message", str(output)]
+            if self.model and self.model != "default":
+                cmd += ["--model", self.model]
+            cmd.append(prompt)
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=self.timeout, cwd=str(workdir))
+            if proc.returncode != 0:
+                raise RuntimeError((proc.stderr or proc.stdout or "").strip()[:2000])
+            text = output.read_text(encoding="utf-8") if output.exists() else proc.stdout
+        return LLMResponse(text=text, model=self.model)
