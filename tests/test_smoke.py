@@ -510,3 +510,40 @@ def test_local_agent_never_persists_its_own_sessions(monkeypatch, tmp_path: Path
     assert "--no-session-persistence" in recorded["cmd"]
     assert "--model" in recorded["cmd"]  # the requested model actually reaches claude
     assert recorded["cmd"][recorded["cmd"].index("--model") + 1] == "haiku"
+
+
+def test_cross_session_tie_breaks_on_time_not_session_id():
+    """`aggregate_user_sessions` breaks a tie by taking the last non-zero vote
+    and calls it the most recent. Sessions reach us in filename order, so they
+    must be sorted by time first or the tie-break resolves alphabetically."""
+    from preftool.judge import extract_preferences_via_judge
+    from preftool.models import Event
+
+    def _session(session_id: str, ts: str, text: str) -> list[Event]:
+        return [
+            Event(session_id=session_id, idx=0, role="user", type="message",
+                  ts=ts, text=text),
+            Event(session_id=session_id, idx=1, role="assistant", type="message",
+                  ts=ts, text="ok"),
+        ]
+
+    # "aaa" is alphabetically first but chronologically LAST
+    events = _session("zzz", "2026-01-01T00:00:00Z", "keep it minimal")
+    events += _session("aaa", "2026-09-01T00:00:00Z", "go broad")
+
+    def respond(system: str, user: str, tag: str) -> str:
+        # one session votes high, the other low -> a 1:1 tie
+        label = "high" if "judge.aaa" in tag else "low"
+        return _judgment(
+            solution_scope={
+                "label": label, "confidence": "high", "rationale": "r",
+                "evidence": [{"source": "target_user_message", "turn_number": 0,
+                              "quote": "go broad" if label == "high" else "keep it minimal"}],
+            }
+        )
+
+    result = extract_preferences_via_judge(events, MockLLMClient(respond))
+    axis = result.diagnostics["chat_vector"]["solution_scope"]
+    assert axis["high_sessions"] == 1 and axis["low_sessions"] == 1  # a real tie
+    # the September session wins, not the alphabetically-last one
+    assert axis["majority_score"] == 1

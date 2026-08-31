@@ -134,6 +134,27 @@ def _confidence(axis: dict[str, Any]) -> float:
     return round(max(0.0, min(1.0, agreement * (0.5 + 0.5 * coverage))), 2)
 
 
+def _session_time(events: list[Event]) -> str:
+    """Latest timestamp in a session; empty when the transcript carries none."""
+    stamps = [event.ts for event in events if event.ts]
+    return max(stamps) if stamps else ""
+
+
+def _chronological(events_by_session: dict[str, list[Event]]) -> list[str]:
+    """Session ids oldest first.
+
+    Sessions with no timestamps sort before dated ones and keep their original
+    relative order, so an undated transcript never claims to be the recent one.
+    """
+    return sorted(
+        events_by_session,
+        key=lambda session_id: (
+            _session_time(events_by_session[session_id]) != "",
+            _session_time(events_by_session[session_id]),
+        ),
+    )
+
+
 def _evidence_for(
     axis_id: str, judgments: list[dict[str, Any]], score: int, session_id: str
 ) -> list[EvidenceRef]:
@@ -254,7 +275,13 @@ def extract_preferences_via_judge(
     for event in events:
         events_by_session.setdefault(event.session_id, []).append(event)
 
-    for session_id, session_events in events_by_session.items():
+    # Judge sessions oldest first. `aggregate_user_sessions` breaks a tie by
+    # taking the last non-zero vote, calling it the most recent one - which is
+    # only true if the sessions arrive in chronological order. They reach us in
+    # filename order (session ids are UUIDs), so without this the tie-break
+    # would resolve alphabetically and be unexplainable.
+    for session_id in _chronological(events_by_session):
+        session_events = events_by_session[session_id]
         conversation = events_to_conversation(session_events)
         turns = user_turn_numbers(conversation)
         if config.judge_max_turns is not None and config.judge_max_turns > 0:
