@@ -163,26 +163,69 @@ def test_extract_is_deterministic_under_mock():
     )
 
 
-def test_extract_keeps_sessions_separate_and_equal_weights_them():
-    """Repeated event indices in separate transcripts must not collide."""
+def test_extract_aggregates_all_turns_without_equal_session_weighting():
+    """Every turn is one vote even when sessions contain different turn counts."""
     first_session = _events()
-    second_session = [
-        event.model_copy(update={"session_id": "s2"}) for event in _events()
-    ]
+    second_session = normalize_records(
+        RAW_TRANSCRIPT[:2], session_id="s2", agent="claude-code"
+    )
+
+    high_scope = json.loads(DIRECTIONAL)
+    high_scope["axes"]["solution_scope"].update(
+        label="high",
+        rationale="user permits a broad solution",
+        evidence=[{"source": "target_user_message", "turn_number": 0,
+                   "quote": "always run the tests"}],
+    )
+
+    def responses(_system, _user, tag):
+        return json.dumps(high_scope) if tag.startswith("judge.s2.") else DIRECTIONAL
+
     result = extract_preferences(
         first_session + second_session,
-        MockLLMClient({"*": DIRECTIONAL}),
+        MockLLMClient(responses),
     )
 
     assert result.diagnostics["n_sessions"] == 2
     assert set(result.diagnostics["session_vectors"]) == {"s1", "s2"}
-    assert result.diagnostics["n_chunks"] == 4
-    assert result.diagnostics["chat_vector"]["solution_scope"][
-        "supported_sessions"
-    ] == 2
+    assert result.diagnostics["n_chunks"] == 3
+    scope = result.diagnostics["chat_vector"]["solution_scope"]
+    assert scope == {
+        "majority_score": -1,
+        "recent_score": 1,
+        "mean_score": -0.3333,
+        "high_count": 1,
+        "low_count": 2,
+        "support": 3,
+        "conflicted": True,
+    }
+    assert next(p for p in result.preferences if p.id == "solution_scope").confidence == 0.53
     assert {ref.session_id for pref in result.preferences for ref in pref.evidence} == {
         "s1", "s2"
     }
+
+
+def test_extract_leaves_an_exact_turn_average_tie_neutral():
+    first_session = normalize_records(
+        RAW_TRANSCRIPT[:2], session_id="s1", agent="claude-code"
+    )
+    second_session = normalize_records(
+        RAW_TRANSCRIPT[:2], session_id="s2", agent="claude-code"
+    )
+    high_scope = json.loads(DIRECTIONAL)
+    high_scope["axes"]["solution_scope"]["label"] = "high"
+
+    def responses(_system, _user, tag):
+        return json.dumps(high_scope) if tag.startswith("judge.s2.") else DIRECTIONAL
+
+    result = extract_preferences(
+        first_session + second_session, MockLLMClient(responses)
+    )
+
+    scope = result.diagnostics["chat_vector"]["solution_scope"]
+    assert scope["mean_score"] == 0.0
+    assert scope["majority_score"] == 0
+    assert "solution_scope" not in {item.id for item in result.preferences}
 
 
 def test_extract_maps_axis_direction_to_the_rubric_text():
@@ -512,10 +555,8 @@ def test_local_agent_never_persists_its_own_sessions(monkeypatch, tmp_path: Path
     assert recorded["cmd"][recorded["cmd"].index("--model") + 1] == "haiku"
 
 
-def test_cross_session_tie_breaks_on_time_not_session_id():
-    """`aggregate_user_sessions` breaks a tie by taking the last non-zero vote
-    and calls it the most recent. Sessions reach us in filename order, so they
-    must be sorted by time first or the tie-break resolves alphabetically."""
+def test_cross_session_recent_score_uses_time_but_tie_stays_neutral():
+    """Chronology controls recent_score but cannot override a zero turn mean."""
     from preftool.judge import extract_preferences_via_judge
     from preftool.models import Event
 
@@ -544,6 +585,8 @@ def test_cross_session_tie_breaks_on_time_not_session_id():
 
     result = extract_preferences_via_judge(events, MockLLMClient(respond))
     axis = result.diagnostics["chat_vector"]["solution_scope"]
-    assert axis["high_sessions"] == 1 and axis["low_sessions"] == 1  # a real tie
-    # the September session wins, not the alphabetically-last one
-    assert axis["majority_score"] == 1
+    assert axis["high_count"] == 1 and axis["low_count"] == 1
+    assert axis["mean_score"] == 0.0
+    assert axis["majority_score"] == 0
+    # September is correctly recognized as recent despite its session id.
+    assert axis["recent_score"] == 1

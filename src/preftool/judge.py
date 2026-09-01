@@ -30,7 +30,6 @@ from extraction.preference_judge import (
     JUDGE_RESPONSE_SCHEMA,
     RUBRICS,
     aggregate_judgments,
-    aggregate_user_sessions,
     build_judge_input,
     validate_judgment,
 )
@@ -155,6 +154,24 @@ def _chronological(events_by_session: dict[str, list[Event]]) -> list[str]:
     )
 
 
+def _aggregate_all_turns(judgments: list[dict[str, Any]]) -> dict[str, Any]:
+    """Average every supported turn directly, without session weighting.
+
+    The collaborator's aggregator supplies the turn-level counts and mean. Its
+    default majority uses recency to break an exact tie; for the study-level
+    vector, direction is instead the sign of the mean, so a zero mean remains
+    neutral.
+    """
+    vector = aggregate_judgments(judgments, level="user")
+    vector["n_sessions"] = len({
+        str(item.get("event", {}).get("session_id", "")) for item in judgments
+    })
+    for axis in vector["axes"].values():
+        mean = float(axis["mean_score"])
+        axis["majority_score"] = 1 if mean > 0 else -1 if mean < 0 else 0
+    return vector
+
+
 def _evidence_for(
     axis_id: str, judgments: list[dict[str, Any]], score: int, session_id: str
 ) -> list[EvidenceRef]:
@@ -275,11 +292,8 @@ def extract_preferences_via_judge(
     for event in events:
         events_by_session.setdefault(event.session_id, []).append(event)
 
-    # Judge sessions oldest first. `aggregate_user_sessions` breaks a tie by
-    # taking the last non-zero vote, calling it the most recent one - which is
-    # only true if the sessions arrive in chronological order. They reach us in
-    # filename order (session ids are UUIDs), so without this the tie-break
-    # would resolve alphabetically and be unexplainable.
+    # Judge sessions oldest first so `recent_score`, evidence, rationales, and
+    # model-call audit order reflect time rather than filename/UUID order.
     for session_id in _chronological(events_by_session):
         session_events = events_by_session[session_id]
         conversation = events_to_conversation(session_events)
@@ -319,13 +333,10 @@ def extract_preferences_via_judge(
 
     vector: dict[str, Any] = {}
     preferences: list[Preference] = []
-    if session_vectors:
-        if len(session_vectors) == 1:
-            vector = next(iter(session_vectors.values()))
-        else:
-            # Match the collaborator's user aggregation: each supported
-            # session gets equal weight, regardless of its number of turns.
-            vector = aggregate_user_sessions(session_vectors.values())
+    if judgments:
+        # Each successfully judged turn is one observation. Session vectors are
+        # retained below for audit/debugging, but do not affect the user vector.
+        vector = _aggregate_all_turns(judgments)
         preferences = vector_to_preferences(vector, judgments)
     preferences = preferences[: config.max_preferences]
 
