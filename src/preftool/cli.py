@@ -283,7 +283,6 @@ def apply(
     repo: RepoOpt = Path("."),
     participant: Annotated[str, typer.Option("--participant")] = "unknown",
     arm: Annotated[str, typer.Option("--arm", help="treatment | placebo | control")] = "treatment",
-    canary: Annotated[bool, typer.Option("--canary/--no-canary", help="Include the reply-marker placeholder.")] = True,
     max_preferences: Annotated[int, typer.Option("--max-preferences")] = 20,
     agent: Annotated[Optional[str], typer.Option("--agent", help="claude-code | codex")] = None,
 ) -> None:
@@ -301,7 +300,6 @@ def apply(
         prefs,
         participant_id=participant,
         arm=arm,  # type: ignore[arg-type]
-        with_canary=canary,
         max_preferences=max_preferences,
         agent=configured_agent,
     )
@@ -310,7 +308,8 @@ def apply(
     _echo(f"file             {inject_mod.instruction_path(Path(repo), configured_agent)}")
     _echo(f"n_preferences    {record.n_preferences}")
     _echo(f"arm              {record.arm}")
-    _echo(f"canary_token     {record.canary_token or '(none)'}")
+    if record.canary_token:
+        _echo(f"test_marker      {record.canary_token}")
     if record.user_edited_outside_block:
         _echo("note             participant edited the instruction file outside our block")
 
@@ -337,7 +336,7 @@ def verify(
         raise typer.Exit(1)
     _echo(f"injection_id     {record.injection_id}")
     _echo(f"injected_at      {record.injected_at}")
-    _echo(f"canary_token     {record.canary_token or '(none)'}")
+    _echo(f"test_marker      {record.canary_token or '(none)'}")
     _echo(f"verified         {record.verified}")
     _echo(f"note             {record.verify_note}")
 

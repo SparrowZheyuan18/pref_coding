@@ -318,7 +318,7 @@ def test_injection_preserves_user_content(tmp_path: Path):
     assert content.count(START) == 1 and content.count(END) == 1
     assert "Keep diffs small." in content
     assert "Run the test suite before committing." not in content  # old body gone
-    assert content.count(first.canary_token) == 1  # marker is stable, not duplicated
+    assert first.canary_token is None  # a real injection carries no test marker
 
     # 3. removal leaves the participant's file behind, untouched
     action = remove_block(tmp_path)
@@ -359,7 +359,7 @@ def test_inject_writes_record(tmp_path: Path):
     prefs = _prefs()
     record = inject(tmp_path, prefs, participant_id="P04", arm="treatment")
 
-    assert record.canary_token == CANARY_TOKEN
+    assert record.canary_token is None  # only `extract --test` injects a marker
     assert record.n_preferences == len(prefs)
     assert record.participant_id == "P04"
     assert record.channel == "claude_md"
@@ -371,16 +371,26 @@ def test_inject_writes_record(tmp_path: Path):
     assert payload["canary_token"] == record.canary_token
     assert payload["n_preferences"] == len(prefs)
 
-    # the marker instruction reached the injected block
+    # nothing was added to the block that the extractor did not produce
     content = claude_md_path(tmp_path).read_text(encoding="utf-8")
-    assert record.canary_token in content
-    assert "Begin every reply" in content
+    assert CANARY_TOKEN not in content
+    assert "Begin every reply" not in content
 
 
-def test_canary_token_is_stable_across_injections(tmp_path: Path):
-    first = inject(tmp_path, _prefs(), participant_id="P07")
-    second = inject(tmp_path, _prefs(), participant_id="P07")
-    assert first.canary_token == second.canary_token == CANARY_TOKEN
+def test_only_test_mode_injects_a_marker(tmp_path: Path):
+    """The marker is a test-phase artefact. A real run must not carry one, and
+    must not need a flag to opt out."""
+    from preftool.extract import placeholder_result
+
+    real = inject(tmp_path, _prefs(), participant_id="P07")
+    assert real.canary_token is None
+    assert CANARY_TOKEN not in claude_md_path(tmp_path).read_text(encoding="utf-8")
+
+    test_prefs = placeholder_result(_events()).preferences
+    marked = inject(tmp_path, test_prefs, participant_id="P07")
+    content = claude_md_path(tmp_path).read_text(encoding="utf-8")
+    assert marked.canary_token == CANARY_TOKEN  # so verify knows what to count
+    assert content.count(CANARY_TOKEN) == 1     # once, as a preference
 
 
 def _write_session(repo: Path, events: list[dict]) -> None:
@@ -390,7 +400,11 @@ def _write_session(repo: Path, events: list[dict]) -> None:
 
 
 def test_verify_counts_marker_in_captured_replies(tmp_path: Path):
-    record = inject(tmp_path, _prefs(), participant_id="P05")
+    from preftool.extract import placeholder_result
+
+    record = inject(
+        tmp_path, placeholder_result(_events()).preferences, participant_id="P05"
+    )
 
     # nothing captured yet
     unverified = verify(tmp_path, record.injection_id)
@@ -424,14 +438,12 @@ def test_block_body_never_truncates():
         Preference(id=f"p{i}", statement=f"Preference number {i}.", priority=i)
         for i in range(200)
     ]
-    body = render_block_body(many, max_preferences=200, canary_token=CANARY_TOKEN)
+    body = render_block_body(many, max_preferences=200)
 
     # every preference reaches the context - no line cap, no silent drop
     for i in range(200):
         assert f"Preference number {i}." in body
-    # every line still carries an instruction prefix, now graded by confidence
     assert sum(line.startswith("- ") for line in body.splitlines()) == 200
-    assert CANARY_TOKEN in body
 
 
 def test_git_exclude_not_gitignore(tmp_path: Path):

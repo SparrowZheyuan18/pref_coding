@@ -127,7 +127,6 @@ def render_block_body(
     prefs: list[Preference],
     *,
     max_preferences: int = 20,
-    canary_token: str | None = None,
 ) -> str:
     """Render the markdown that goes between the markers. Pure function.
 
@@ -152,18 +151,6 @@ def render_block_body(
         lines = lines[:-1]  # the trailing blank is added back by the join below
     else:
         lines.append("- (no preferences extracted yet)")
-
-    if canary_token:
-        # Placeholder preference, visible in the conversation itself: once this
-        # block is injected, every reply starts carrying the marker, which is
-        # what makes the intervention observable without any extra plumbing.
-        lines += [
-            "",
-            "## Reply marker (required)",
-            "",
-            f"Begin every reply with `{canary_token}` on its own line, before any "
-            "other text. Do this in every turn, including short answers.",
-        ]
 
     return "\n".join(lines).strip()
 
@@ -290,35 +277,24 @@ def git_unexclude(repo: Path) -> bool:
     return True
 
 
-def new_canary_token() -> str:
-    """The study-wide marker. Stable on purpose - see CANARY_TOKEN."""
-    return CANARY_TOKEN
-
-
 def inject(
     repo: Path,
     prefs: list[Preference],
     *,
     participant_id: str = "unknown",
     arm: Arm = "treatment",
-    with_canary: bool = True,
     max_preferences: int = 20,
-    canary_token: str | None = None,
     agent: str = "claude-code",
 ) -> InjectionRecord:
     repo = Path(repo)
-    canary_token = (canary_token or CANARY_TOKEN) if with_canary else None
 
-    # When the extractor already emitted the marker as a preference (test
-    # phase), do not render the separate section too - one instruction, once.
-    in_prefs = bool(canary_token) and any(
-        canary_token in p.statement for p in prefs[:max_preferences]
-    )
-    body = render_block_body(
-        prefs,
-        max_preferences=max_preferences,
-        canary_token=None if in_prefs else canary_token,
-    )
+    # Nothing is added to the block that the extractor did not produce. In test
+    # mode (`extract --test`) the reply marker arrives as a preference like any
+    # other; noticing it here is what lets `verify` count it later.
+    marker = CANARY_TOKEN if any(
+        CANARY_TOKEN in p.statement for p in prefs[:max_preferences]
+    ) else None
+    body = render_block_body(prefs, max_preferences=max_preferences)
     action, user_edited = upsert_block(repo, body, agent=agent)
     git_exclude(repo)
 
@@ -336,7 +312,7 @@ def inject(
         n_preferences=min(len(prefs), max_preferences),
         arm=arm,
         injected_at=injected_at,
-        canary_token=canary_token,
+        canary_token=marker,
         user_edited_outside_block=user_edited,
     )
     _write_record(repo, record)
@@ -395,7 +371,9 @@ def verify(repo: Path, injection_id: str) -> InjectionRecord:
 
     if not record.canary_token:
         record.verified = None
-        record.verify_note = "no marker (injected with --no-canary)"
+        record.verify_note = (
+            "no marker in this injection - only `extract --test` injects one"
+        )
         record.verified_at = _utcnow()
         _write_record(repo, record)
         return record

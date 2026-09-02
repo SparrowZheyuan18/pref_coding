@@ -41,7 +41,7 @@ def test_codex_injection_uses_agents_md_and_is_reversible(tmp_path: Path):
     path = instruction_path(tmp_path, "codex")
     path.write_text("# Existing Codex instructions\n")
     record = inject(tmp_path, [Preference(id="p", statement="Keep diffs small.")],
-                    agent="codex", with_canary=False)
+                    agent="codex")
     assert record.channel == "agents_md"
     assert "Keep diffs small." in path.read_text()
     assert not (tmp_path / ".claude" / "CLAUDE.md").exists()
