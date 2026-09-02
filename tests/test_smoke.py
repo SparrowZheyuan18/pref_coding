@@ -629,23 +629,57 @@ def test_confidence_is_laplace_smoothed():
     assert _confidence({"support": 0}) == 0.0
 
 
-def test_confidence_grades_the_injected_wording():
-    """A preference shown once must not read like one shown every time."""
-    from preftool.inject import MODERATE_CONFIDENCE, STRONG_CONFIDENCE
+def test_confidence_groups_the_injected_preferences():
+    """A preference shown once must not read like one shown every time.
 
-    def line(confidence: float) -> str:
-        prefs = [Preference(id="p", statement="Run the tests.", confidence=confidence)]
-        return next(
-            l for l in render_block_body(prefs).splitlines() if l.startswith("- ")
-        )
+    The strength wording is one lead-in per band, not a qualifier on every
+    line, so the check is which group a preference lands under.
+    """
+    from preftool.inject import BAND_LEAD_IN, MODERATE_CONFIDENCE, STRONG_CONFIDENCE
 
-    assert line(0.90).startswith("- Always:")
-    assert line(0.75).startswith("- Usually:")
-    assert line(0.60).startswith("- When it comes up:")
+    lead = dict(BAND_LEAD_IN)
+    prefs = [
+        Preference(id="s", statement="Strong one.", confidence=0.90, priority=10),
+        Preference(id="m", statement="Moderate one.", confidence=0.75, priority=20),
+        Preference(id="w", statement="Weak one.", confidence=0.60, priority=30),
+    ]
+    body = render_block_body(prefs)
 
-    # the bands are contiguous - every confidence lands in exactly one
-    assert line(STRONG_CONFIDENCE).startswith("- Always:")
-    assert line(MODERATE_CONFIDENCE).startswith("- Usually:")
+    def band_of(statement: str) -> str:
+        """Which lead-in most recently preceded this statement."""
+        current = ""
+        for line in body.splitlines():
+            for band, text in BAND_LEAD_IN:
+                if line == text:
+                    current = band
+            if statement in line:
+                return current
+        raise AssertionError(f"{statement!r} not rendered")
+
+    assert band_of("Strong one.") == "strong"
+    assert band_of("Moderate one.") == "moderate"
+    assert band_of("Weak one.") == "weak"
+
+    # bands are contiguous: a value exactly on a cut point takes the higher band
+    single = render_block_body([Preference(id="x", statement="On the line.",
+                                           confidence=STRONG_CONFIDENCE)])
+    assert lead["strong"] in single and lead["moderate"] not in single
+    single = render_block_body([Preference(id="x", statement="On the line.",
+                                           confidence=MODERATE_CONFIDENCE)])
+    assert lead["moderate"] in single and lead["strong"] not in single
+
+
+def test_only_populated_bands_appear():
+    """An empty band must not leave its lead-in behind with nothing under it."""
+    from preftool.inject import BAND_LEAD_IN
+
+    lead = dict(BAND_LEAD_IN)
+    body = render_block_body(
+        [Preference(id="s", statement="Strong only.", confidence=0.90)]
+    )
+    assert lead["strong"] in body
+    assert lead["moderate"] not in body
+    assert lead["weak"] not in body
 
 
 def test_avoid_polarity_keeps_its_verb_under_grading():
@@ -654,4 +688,4 @@ def test_avoid_polarity_keeps_its_verb_under_grading():
                    polarity="avoid", confidence=0.90)
     ]
     body = render_block_body(prefs)
-    assert "- Always avoid: Force push to shared branches." in body
+    assert "- Avoid: Force push to shared branches." in body

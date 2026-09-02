@@ -97,19 +97,30 @@ def _outside_text(content: str) -> str:
 
 # Confidence bands. The same instruction carries different force depending on
 # how consistently the developer showed the preference, so each band gets its
-# own wording. Cut points are chosen over the reachable range of the
-# Laplace-smoothed rate (roughly 0.55-0.95): one lone observation lands at
-# 0.667, five consistent ones at 0.857.
+# own lead-in. Cut points sit over the reachable range of the Laplace-smoothed
+# rate (roughly 0.55-0.95): one lone observation lands at 0.667, five
+# consistent ones at 0.857.
 STRONG_CONFIDENCE = 0.85
 MODERATE_CONFIDENCE = 0.70
 
+# One lead-in per band rather than a qualifier on every line: the wording
+# appears three times instead of once per preference, and the grouping is
+# itself a strength signal. Each says what may override the preference, which
+# is actionable, where a bare adverb is not.
+BAND_LEAD_IN = (
+    ("strong", "Follow these consistently:"),
+    ("moderate", "Follow these by default, unless the task calls for otherwise:"),
+    ("weak", "These signals were weaker or less consistent - weigh them, but do "
+             "not treat them as rules:"),
+)
 
-def _strength(confidence: float) -> str:
+
+def _band(confidence: float) -> str:
     if confidence >= STRONG_CONFIDENCE:
-        return "Always"
+        return "strong"
     if confidence >= MODERATE_CONFIDENCE:
-        return "Usually"
-    return "When it comes up"
+        return "moderate"
+    return "weak"
 
 
 def render_block_body(
@@ -127,18 +138,18 @@ def render_block_body(
 
     lines = ["## Developer preferences", ""]
     if ordered:
-        lines += [
-            "Each line is graded by how consistently this developer has shown the "
-            "preference across their sessions.",
-            "",
-        ]
+        grouped: dict[str, list[str]] = {}
         for pref in ordered:
             statement = " ".join(pref.statement.split())
-            strength = _strength(pref.confidence)
-            if pref.polarity == "avoid":
-                lines.append(f"- {strength} avoid: {statement}")
-            else:
-                lines.append(f"- {strength}: {statement}")
+            prefix = "- Avoid: " if pref.polarity == "avoid" else "- "
+            grouped.setdefault(_band(pref.confidence), []).append(prefix + statement)
+        for band, lead_in in BAND_LEAD_IN:
+            if band not in grouped:
+                continue
+            lines += [lead_in, ""]
+            lines += grouped[band]
+            lines.append("")
+        lines = lines[:-1]  # the trailing blank is added back by the join below
     else:
         lines.append("- (no preferences extracted yet)")
 
