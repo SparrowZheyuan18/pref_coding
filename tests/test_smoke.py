@@ -199,7 +199,8 @@ def test_extract_aggregates_all_turns_without_equal_session_weighting():
         "support": 3,
         "conflicted": True,
     }
-    assert next(p for p in result.preferences if p.id == "solution_scope").confidence == 0.53
+    # Laplace-smoothed: 2 of 3 directional turns agree -> (2 + 1) / (3 + 2)
+    assert next(p for p in result.preferences if p.id == "solution_scope").confidence == 0.6
     assert {ref.session_id for pref in result.preferences for ref in pref.evidence} == {
         "s1", "s2"
     }
@@ -428,7 +429,8 @@ def test_block_body_never_truncates():
     # every preference reaches the context - no line cap, no silent drop
     for i in range(200):
         assert f"Preference number {i}." in body
-    assert body.count("- Do:") == 200
+    # every line still carries an instruction prefix, now graded by confidence
+    assert sum(line.startswith("- ") for line in body.splitlines()) == 200
     assert CANARY_TOKEN in body
 
 
@@ -590,3 +592,66 @@ def test_cross_session_recent_score_uses_time_but_tie_stays_neutral():
     assert axis["majority_score"] == 0
     # September is correctly recognized as recent despite its session id.
     assert axis["recent_score"] == 1
+
+
+# ------------------------------------------------------------------ confidence
+
+
+def test_confidence_is_laplace_smoothed():
+    """`(k + 1) / (n + 2)` over the turns agreeing with the majority direction.
+
+    The raw rate `k / n` was rejected: for the winning direction it cannot fall
+    below 0.5, and dropping `n` ranked a preference stated once (1/1 = 1.0)
+    above one stated four times out of six (0.67).
+    """
+    from preftool.judge import _confidence
+
+    def conf(high: int, low: int) -> float:
+        score = 1 if high > low else -1
+        return _confidence({
+            "high_count": high, "low_count": low,
+            "support": high + low, "majority_score": score,
+        })
+
+    assert conf(1, 0) == round(2 / 3, 4)   # one lone observation
+    assert conf(3, 0) == 0.8
+    assert conf(6, 0) == 0.875
+    assert conf(2, 1) == 0.6
+    assert conf(4, 2) == 0.625
+
+    # the inversion the raw rate produced is gone
+    assert conf(1, 0) < conf(6, 0)
+    # more evidence at the same rate scores higher
+    assert conf(2, 1) < conf(8, 4)
+    # a cleaner split at the same sample size scores higher
+    assert conf(3, 2) < conf(4, 1)
+    # an axis nobody supported is not a preference at all
+    assert _confidence({"support": 0}) == 0.0
+
+
+def test_confidence_grades_the_injected_wording():
+    """A preference shown once must not read like one shown every time."""
+    from preftool.inject import MODERATE_CONFIDENCE, STRONG_CONFIDENCE
+
+    def line(confidence: float) -> str:
+        prefs = [Preference(id="p", statement="Run the tests.", confidence=confidence)]
+        return next(
+            l for l in render_block_body(prefs).splitlines() if l.startswith("- ")
+        )
+
+    assert line(0.90).startswith("- Always:")
+    assert line(0.75).startswith("- Usually:")
+    assert line(0.60).startswith("- When it comes up:")
+
+    # the bands are contiguous - every confidence lands in exactly one
+    assert line(STRONG_CONFIDENCE).startswith("- Always:")
+    assert line(MODERATE_CONFIDENCE).startswith("- Usually:")
+
+
+def test_avoid_polarity_keeps_its_verb_under_grading():
+    prefs = [
+        Preference(id="p", statement="Force push to shared branches.",
+                   polarity="avoid", confidence=0.90)
+    ]
+    body = render_block_body(prefs)
+    assert "- Always avoid: Force push to shared branches." in body

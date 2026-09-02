@@ -117,20 +117,47 @@ def _judge_turn(
 
 
 def _confidence(axis: dict[str, Any]) -> float:
-    """How much to trust an aggregated axis.
+    """Laplace-smoothed agreement rate for an axis: `(k + 1) / (n + 2)`.
 
-    Two things matter: whether the directional judgments agree, and how much of
-    the session supported the axis at all. A single supporting turn out of forty
-    should not read as certainty.
+    `k` is the number of judged turns agreeing with the axis's majority
+    direction, `n` the number of turns that gave any direction (`support`;
+    `na` turns are excluded). This is the posterior mean of the agreement rate
+    under a uniform Beta(1, 1) prior - Laplace's rule of succession - so a
+    direction seen once is shrunk toward 0.5 while one seen consistently across
+    many turns approaches its observed rate.
+
+    The raw rate `k / n` was rejected because it cannot fall below 0.5 for the
+    winning direction and discards `n` entirely, which ranked a preference
+    stated once (1/1 = 1.0) above one stated four times out of six (0.67).
+
+    The model's own per-turn confidence ("high"/"medium"/"low") is deliberately
+    unused; the study dropped it.
     """
     support = int(axis.get("support", axis.get("supported_sessions", 0)))
     if support == 0:
         return 0.0
     high = int(axis.get("high_count", axis.get("high_sessions", 0)))
     low = int(axis.get("low_count", axis.get("low_sessions", 0)))
-    agreement = max(high, low) / support
-    coverage = min(1.0, support / 5.0)  # five agreeing turns is as good as it gets
-    return round(max(0.0, min(1.0, agreement * (0.5 + 0.5 * coverage))), 2)
+    agreeing = high if int(axis.get("majority_score", 0)) == 1 else low
+    return round((agreeing + 1) / (support + 2), 4)
+
+
+def _aggregate_all_turns(judgments: list[dict[str, Any]]) -> dict[str, Any]:
+    """Average every supported turn directly, without session weighting.
+
+    The collaborator's aggregator supplies the turn-level counts and mean. Its
+    default majority uses recency to break an exact tie; for the study-level
+    vector, direction is instead the sign of the mean, so a zero mean remains
+    neutral.
+    """
+    vector = aggregate_judgments(judgments, level="user")
+    vector["n_sessions"] = len({
+        str(item.get("event", {}).get("session_id", "")) for item in judgments
+    })
+    for axis in vector["axes"].values():
+        mean = float(axis["mean_score"])
+        axis["majority_score"] = 1 if mean > 0 else -1 if mean < 0 else 0
+    return vector
 
 
 def _session_time(events: list[Event]) -> str:
@@ -152,24 +179,6 @@ def _chronological(events_by_session: dict[str, list[Event]]) -> list[str]:
             _session_time(events_by_session[session_id]),
         ),
     )
-
-
-def _aggregate_all_turns(judgments: list[dict[str, Any]]) -> dict[str, Any]:
-    """Average every supported turn directly, without session weighting.
-
-    The collaborator's aggregator supplies the turn-level counts and mean. Its
-    default majority uses recency to break an exact tie; for the study-level
-    vector, direction is instead the sign of the mean, so a zero mean remains
-    neutral.
-    """
-    vector = aggregate_judgments(judgments, level="user")
-    vector["n_sessions"] = len({
-        str(item.get("event", {}).get("session_id", "")) for item in judgments
-    })
-    for axis in vector["axes"].values():
-        mean = float(axis["mean_score"])
-        axis["majority_score"] = 1 if mean > 0 else -1 if mean < 0 else 0
-    return vector
 
 
 def _evidence_for(

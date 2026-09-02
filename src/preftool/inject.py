@@ -95,6 +95,23 @@ def _outside_text(content: str) -> str:
     return (before.strip() + "\n" + after.strip()).strip()
 
 
+# Confidence bands. The same instruction carries different force depending on
+# how consistently the developer showed the preference, so each band gets its
+# own wording. Cut points are chosen over the reachable range of the
+# Laplace-smoothed rate (roughly 0.55-0.95): one lone observation lands at
+# 0.667, five consistent ones at 0.857.
+STRONG_CONFIDENCE = 0.85
+MODERATE_CONFIDENCE = 0.70
+
+
+def _strength(confidence: float) -> str:
+    if confidence >= STRONG_CONFIDENCE:
+        return "Always"
+    if confidence >= MODERATE_CONFIDENCE:
+        return "Usually"
+    return "When it comes up"
+
+
 def render_block_body(
     prefs: list[Preference],
     *,
@@ -110,10 +127,18 @@ def render_block_body(
 
     lines = ["## Developer preferences", ""]
     if ordered:
+        lines += [
+            "Each line is graded by how consistently this developer has shown the "
+            "preference across their sessions.",
+            "",
+        ]
         for pref in ordered:
-            verb = "Do" if pref.polarity == "prefer" else "Avoid"
             statement = " ".join(pref.statement.split())
-            lines.append(f"- {verb}: {statement}")
+            strength = _strength(pref.confidence)
+            if pref.polarity == "avoid":
+                lines.append(f"- {strength} avoid: {statement}")
+            else:
+                lines.append(f"- {strength}: {statement}")
     else:
         lines.append("- (no preferences extracted yet)")
 
